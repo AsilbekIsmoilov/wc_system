@@ -1,0 +1,12 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.log
+logs/
+media/
+staticfiles/
+.env
+creds.json
+celerybeat-schedule
+*.sqlite3

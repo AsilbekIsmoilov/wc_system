@@ -1,0 +1,224 @@
+"""
+Runner -> WFM push (Oqim C) for ALL operators-module models (two-way sync).
+Call push_cycle_to_wfm() at the END of each runner.
+
+Durations -> minutes; times -> 'HH:MM'; dates -> ISO. Upsert key on WFM side = external_id.
+"""
+import logging
+
+from django.utils import timezone
+from hourly_locks.models import (
+    Group, Shift, RequestTypeRule, Operator, Cycle,
+    WorkDebt, WorkDebtDetail, Compensation, Transfer, CompensationDebtLink,
+)
+
+# Watermark stored in SystemPolicy (key/value JSON) so pushes are incremental.
+WATERMARK_KEY = "wfm_sync_watermark"
+
+
+def _load_watermark():
+    from hourly_locks.models import SystemPolicy
+    row = SystemPolicy.objects.filter(key=WATERMARK_KEY).first()
+    if row and isinstance(row.value, dict):
+        ts = row.value.get("since")
+        if ts:
+            from datetime import datetime
+            try:
+                return datetime.fromisoformat(ts)
+            except ValueError:
+                return None
+    return None  # None => push everything (first run)
+
+
+def _save_watermark(dt):
+    from hourly_locks.models import SystemPolicy
+    SystemPolicy.objects.update_or_create(
+        key=WATERMARK_KEY, defaults={"value": {"since": dt.isoformat()}}
+    )
+
+
+def _since_filter(qs, since):
+    return qs.filter(updated_at__gt=since) if since else qs
+from . import wfm_client
+
+logger = logging.getLogger("wfm_sync")
+CHUNK = 500
+
+
+def _min(td):
+    return int(td.total_seconds() // 60) if td else 0
+
+
+def _hhmm(t):
+    return t.strftime("%H:%M") if t else None
+
+
+def _iso(d):
+    return d.isoformat() if d else None
+
+
+def _push(entity, items):
+    """Push a list to WFM in chunks via the generic ingest endpoint."""
+    if not items:
+        return 0
+    for i in range(0, len(items), CHUNK):
+        wfm_client.push(entity, items[i:i + CHUNK])
+    return len(items)
+
+
+# ---------------------------------------------------------------------------
+# Serializers (Django model -> WFM document)
+# ---------------------------------------------------------------------------
+def _ser_group(g):
+    return {"external_id": g.id, "name": g.name, "supervisor_id": g.supervisor_id, "is_active": g.is_active}
+
+
+def _ser_shift(s):
+    return {
+        "external_id": s.id, "code": s.code, "display_name": s.display_name,
+        "start_time": _hhmm(s.start_time), "end_time": _hhmm(s.end_time),
+        "crosses_midnight": s.crosses_midnight,
+        "norm_full": _min(s.norm_full), "norm_lock_soft_cap": _min(s.norm_lock_soft_cap),
+        "norm_lock_warn_at": _min(s.norm_lock_warn_at), "tolerance_undertime": _min(s.tolerance_undertime),
+        "fetch_hour_padding": s.fetch_hour_padding, "is_night": s.is_night,
+        "requires_special_pipeline": s.requires_special_pipeline, "is_active": s.is_active,
+    }
+
+
+def _ser_type_rule(r):
+    return {
+        "external_id": r.id, "category": r.category, "code": r.code, "display_name": r.display_name,
+        "description": r.description, "requires_date_from": r.requires_date_from,
+        "requires_date_to": r.requires_date_to, "requires_hour_range": r.requires_hour_range,
+        "requires_duration": r.requires_duration, "requires_related_debts": r.requires_related_debts,
+        "creates_debt_if_unmet": r.creates_debt_if_unmet, "exempts_from_daily_debt": r.exempts_from_daily_debt,
+        "auto_approve_on_create": r.auto_approve_on_create, "allows_past_date": r.allows_past_date,
+        "requires_supervisor_approval": r.requires_supervisor_approval,
+        "forbidden_on_day_off": r.forbidden_on_day_off,
+        "min_duration": _min(r.min_duration) if r.min_duration else None,
+        "max_duration": _min(r.max_duration) if r.max_duration else None,
+        "verification_strategy": r.verification_strategy, "sort_order": r.sort_order, "is_active": r.is_active,
+    }
+
+
+def _ser_operator(o):
+    return {
+        "external_id": o.id, "login_id": o.login_id, "surname": o.surname, "name": o.name,
+        "middle_name": o.middle_name, "photo": (str(o.photo) or None) if o.photo else None,
+        "group_id": o.group_id, "is_active": o.is_active,
+    }
+
+
+def _ser_cycle(c):
+    return {
+        "external_id": c.id, "year": c.year, "month": c.month,
+        "start_date": _iso(c.start_date), "end_date": _iso(c.end_date),
+        "status": c.status, "archive_stats": c.archive_stats or {},
+    }
+
+
+def _ser_work_debt(w):
+    return {
+        "external_id": w.id, "operator_id": w.operator_id, "cycle_id": w.cycle_id,
+        "current_debt": _min(w.current_debt), "total_accumulated": _min(w.total_accumulated),
+    }
+
+
+def _ser_detail(d):
+    return {
+        "external_id": d.id, "operator_id": d.operator_id, "cycle_id": d.cycle_id,
+        "day": _iso(d.day), "source": d.source, "source_object_id": d.source_object_id,
+        "shift_id": d.shift_id, "shift_code_snapshot": d.shift_code_snapshot, "violation_type": d.violation_type,
+        "norm_full": _min(d.norm_full), "fact_full": _min(d.fact_full), "debt_full": _min(d.debt_full),
+        "norm_lock": _min(d.norm_lock), "fact_lock": _min(d.fact_lock), "debt_lock": _min(d.debt_lock),
+        "make_up_wh": _min(d.make_up_wh), "locked_for_compensation": d.locked_for_compensation, "note": d.note,
+    }
+
+
+def _ser_compensation(c):
+    return {
+        "external_id": c.id, "operator_id": c.operator_id, "cycle_id": c.cycle_id, "status": c.status,
+        "comment": c.comment, "verified_at": c.verified_at.isoformat() if c.verified_at else None,
+        "verified_by_id": c.verified_by_id, "fixed_by_id": c.fixed_by_id, "type_rule_id": c.type_rule_id,
+        "source": c.source, "planned_date": _iso(c.planned_date),
+        "requested_duration": _min(c.requested_duration) if c.requested_duration else None,
+        "verified_duration": _min(c.verified_duration) if c.verified_duration else None,
+        "remaining_debt": _min(c.remaining_debt) if c.remaining_debt else None,
+        "deducted": c.deducted, "correlation_id": getattr(c, "correlation_id", None),
+    }
+
+
+def _ser_transfer(t):
+    return {
+        "external_id": t.id, "operator_id": t.operator_id, "cycle_id": t.cycle_id, "status": t.status,
+        "comment": t.comment, "type_rule_id": t.type_rule_id,
+        "date_from": _iso(t.date_from), "date_to": _iso(t.date_to),
+        "hour_from": _hhmm(t.hour_from), "hour_to": _hhmm(t.hour_to),
+        "requested_duration": _min(t.requested_duration) if t.requested_duration else None,
+        "verified_duration": _min(t.verified_duration) if t.verified_duration else None,
+        "remaining_debt": _min(t.remaining_debt) if t.remaining_debt else None,
+        "correlation_id": getattr(t, "correlation_id", None),
+    }
+
+
+def _ser_debt_link(l):
+    return {
+        "external_id": l.id, "compensation_id": l.compensation_id, "debt_detail_id": l.debt_detail_id,
+        "snapshot": l.snapshot or {}, "applied": l.applied,
+        "applied_amount": _min(l.applied_amount) if l.applied_amount else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Push entrypoints
+# ---------------------------------------------------------------------------
+def push_master_data(since=None) -> dict:
+    """Reference data owned by Python: only records changed since the watermark."""
+    out = {
+        "operator-groups": _push("operator-groups", [_ser_group(x) for x in _since_filter(Group.objects.all(), since)]),
+        "shifts": _push("shifts", [_ser_shift(x) for x in _since_filter(Shift.objects.all(), since)]),
+        "type-rules": _push("type-rules", [_ser_type_rule(x) for x in _since_filter(RequestTypeRule.objects.all(), since)]),
+        "operators": _push("operators", [_ser_operator(x) for x in _since_filter(Operator.objects.all(), since)]),
+    }
+    logger.info("WFM master push (since=%s): %s", since, out)
+    return out
+
+
+def push_cycle_to_wfm(cycle=None, include_master=True, full=False) -> dict:
+    """
+    Push changed records (since last watermark) for a cycle + master data. Call at runner end.
+    full=True => ignore watermark and push everything (use for a one-time backfill).
+    """
+    started_at = timezone.now()
+    since = None if full else _load_watermark()
+
+    if cycle is None:
+        cycle = Cycle.get_active()
+    out = {"since": since.isoformat() if since else None}
+    if include_master:
+        out["master"] = push_master_data(since)
+    if cycle is None:
+        logger.warning("WFM push: aktiv cikl topilmadi")
+        return out
+
+    wfm_client.push("cycles", [_ser_cycle(cycle)])  # cycle: bir nechta qator, doim
+    out["work-debts"] = _push("work-debts", [_ser_work_debt(x) for x in _since_filter(WorkDebt.objects.filter(cycle=cycle), since)])
+    out["work-debt-details"] = _push("work-debt-details", [_ser_detail(x) for x in _since_filter(WorkDebtDetail.objects.filter(cycle=cycle), since)])
+    out["compensations"] = _push("compensations", [_ser_compensation(x) for x in _since_filter(Compensation.objects.filter(cycle=cycle), since)])
+    out["transfers"] = _push("transfers", [_ser_transfer(x) for x in _since_filter(Transfer.objects.filter(cycle=cycle), since)])
+    out["compensation-debt-links"] = _push(
+        "compensation-debt-links",
+        [_ser_debt_link(x) for x in _since_filter(CompensationDebtLink.objects.filter(compensation__cycle=cycle), since)],
+    )
+
+    _save_watermark(started_at)  # keyingi push shu vaqtdan boshlaydi
+    logger.info("WFM push (cycle %s, since=%s): %s", cycle.id, since, out)
+    return out
+
+
+def push_cycle_status(cycle) -> dict:
+    """Lighter push for month_runner: only the cycle row."""
+    if cycle is None:
+        return {"pushed": 0}
+    wfm_client.push("cycles", [_ser_cycle(cycle)])
+    return {"cycle_id": cycle.id, "status": cycle.status}
