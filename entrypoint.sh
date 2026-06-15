@@ -7,9 +7,13 @@ while ! nc -z "${DB_HOST}" "${DB_PORT:-3306}"; do
 done
 echo "MySQL is up."
 
-# Migrations only on the web container (avoid running 3x). Set RUN_MIGRATIONS=1 there.
 if [ "${RUN_MIGRATIONS}" = "1" ]; then
+  echo "Running migrations (default)..."
   python manage.py migrate --noinput
+
+  echo "Running migrations (archive)..."
+  python manage.py migrate --database=archive --noinput
+
   python manage.py collectstatic --noinput || true
 fi
 
