@@ -11,6 +11,15 @@ DEBUG = os.environ.get("DEBUG", "1") == "1"
 
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "*").split(",")
 
+CSRF_TRUSTED_ORIGINS = [
+    o.strip()
+    for o in os.environ.get(
+        "CSRF_TRUSTED_ORIGINS",
+        "http://10.145.20.9:4020",
+    ).split(",")
+    if o.strip()
+]
+
 REDIS_URL = os.environ.get("REDIS_URL", "redis://127.0.0.1:6379")
 
 
