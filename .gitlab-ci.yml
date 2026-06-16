@@ -1,12 +1,13 @@
 stages:
   - build
   - deploy
+
 variables:
   DOCKER_DRIVER: overlay2
   DOCKER_HOST: "unix:///var/run/docker.sock"
+  GIT_CLEAN_FLAGS: -ffdx         
 
 # ---------- TEMPLATES ----------
-
 .build_prod_template:
   stage: build
   image: docker:25
@@ -17,13 +18,13 @@ variables:
   stage: deploy
   image: docker:25
   script:
+    - rm -rf nginx.conf                    
+    - git checkout HEAD -- nginx.conf      
     - docker compose down
     - docker compose up -d
     - docker image prune -f
 
-
 # ---------- PROD ----------
-
 build-prod:
   extends: .build_prod_template
   tags: [wfm_dev]
