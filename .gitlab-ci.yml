@@ -5,7 +5,7 @@ stages:
 variables:
   DOCKER_DRIVER: overlay2
   DOCKER_HOST: "unix:///var/run/docker.sock"
-  GIT_CLEAN_FLAGS: -ffdx         
+  GIT_CLEAN_FLAGS: -ffdx
 
 # ---------- TEMPLATES ----------
 .build_prod_template:
@@ -18,17 +18,8 @@ variables:
   stage: deploy
   image: docker:25
   script:
-    - rm -rf nginx.conf
-    - git checkout HEAD -- nginx.conf
     - docker compose down
     - docker compose up -d
-    - sleep 12
-    - echo "===== PS ====="
-    - docker compose ps -a
-    - echo "===== WEB LOGS ====="
-    - docker compose logs web --tail=100
-    - echo "===== NGINX LOGS ====="
-    - docker compose logs nginx --tail=40
     - docker image prune -f
 
 # ---------- PROD ----------
