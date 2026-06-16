@@ -17,8 +17,6 @@ variables:
   stage: deploy
   image: docker:25
   script:
-    - rm -rf nginx.conf
-    - git checkout -- nginx.conf
     - docker compose down
     - docker compose up -d
     - docker image prune -f
