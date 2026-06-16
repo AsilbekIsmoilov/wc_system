@@ -16,10 +16,12 @@ variables:
 .deploy_prod_template:
   stage: deploy
   image: docker:25
-  script:
-    - docker compose down
-    - docker compose up -d
-    - docker image prune -f
+script:
+  - rm -rf nginx.conf
+  - git checkout -- nginx.conf
+  - docker compose down
+  - docker compose up -d
+  - docker image prune -f
 
 
 # ---------- PROD ----------
