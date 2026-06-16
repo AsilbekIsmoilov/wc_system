@@ -42,6 +42,8 @@ services:
     environment:
       <<: *app-env
       RUN_MIGRATIONS: "1"
+    volumes:
+      - /home/user/Projects/wc_system/creds.json:/app/creds.json:ro
     depends_on:
       db:
         condition: service_healthy
