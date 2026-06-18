@@ -104,7 +104,7 @@ def _ser_type_rule(r):
 def _ser_operator(o):
     return {
         "external_id": o.id, "login_id": o.login_id, "surname": o.surname, "name": o.name,
-        "middle_name": o.middle_name, "photo": (str(o.photo) or None) if o.photo else None,
+        "middle_name": o.middle_name, "photo": (str(o.photo) or None) if o.photo else None,"full_name": o.full_name,
         "group_id": o.group_id, "is_active": o.is_active,
     }
 
