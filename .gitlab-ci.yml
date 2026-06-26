@@ -8,13 +8,13 @@ variables:
   GIT_CLEAN_FLAGS: -ffdx
 
 # ---------- TEMPLATES ----------
-.build_prod_template:
+.build_template:
   stage: build
   image: docker:25
   script:
     - docker compose build
 
-.deploy_prod_template:
+.deploy_template:
   stage: deploy
   image: docker:25
   script:
@@ -22,15 +22,28 @@ variables:
     - docker compose up -d
     - docker image prune -f
 
+# ---------- DEV ----------
+build-dev:
+  extends: .build_template
+  tags: [wfm_dev]
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "dev"'
+
+deploy-dev:
+  extends: .deploy_template
+  tags: [wfm_dev]
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "dev"'
+
 # ---------- PROD ----------
 build-prod:
-  extends: .build_prod_template
-  tags: [wfm_dev]
+  extends: .build_template
+  tags: [wfm_prod]
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
 
 deploy-prod:
-  extends: .deploy_prod_template
-  tags: [wfm_dev]
+  extends: .deploy_template
+  tags: [wfm_prod]
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
