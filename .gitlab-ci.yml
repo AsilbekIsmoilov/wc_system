@@ -51,10 +51,12 @@ logs-prod:
   script:
     - echo "===== docker ps ====="
     - docker ps --format '{{.Names}}' || true
-    - echo "===== docker compose logs --tail 300 web ====="
-    - docker compose logs --tail=300 web 2>&1 || true
-    - echo "===== docker logs --tail 300 wc_system-web-1 ====="
-    - docker logs --tail=300 wc_system-web-1 2>&1 || true
+    - echo "===== ПРОВЕРКА ТАБЛИЦ (default БД) ====="
+    - docker compose exec -T web python manage.py shell -c "from django.db import connection; t=set(connection.introspection.table_names()); print('ВСЕГО таблиц:', len(t)); [print('  ', n, '->', ('ЕСТЬ' if n in t else 'НЕТ !!!')) for n in ['django_session','django_content_type','auth_permission','django_admin_log','hourly_locks_user','hourly_locks_operator','hourly_locks_cycle','hourly_locks_requesttyperule']]" || true
+    - echo "===== migrate --plan (sessions/admin) ====="
+    - docker compose exec -T web python manage.py showmigrations sessions admin auth || true
+    - echo "===== docker compose logs --tail 250 web ====="
+    - docker compose logs --tail=250 web 2>&1 || true
 
 deploy-prod:
   extends: .deploy_template
