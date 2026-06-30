@@ -1,8 +1,9 @@
-"""ВРЕМЕННАЯ диагностика 500 на /api/v1/ (запрос напрямую к uvicorn).
+"""ВРЕМЕННАЯ диагностика 500 на /api/v1/.
 
-Ждёт пока uvicorn поднимется (retry на ConnectionRefused), затем печатает
-статус и тело ответа. При DEBUG=1 тело 500 содержит полный traceback.
-Запуск из CI: `docker compose exec -T web python scripts/diag500.py`.
+Ждёт uvicorn, затем дёргает /api/v1/ двумя путями:
+  1) напрямую к uvicorn (web:8000)
+  2) через nginx (как браузер, с Host реального хоста)
+Печатает статус и тело (при DEBUG=1 тело 500 = полный traceback).
 """
 import os
 import time
@@ -11,24 +12,33 @@ import urllib.request
 
 print("=== ENV DEBUG =", os.environ.get("DEBUG"), "===")
 
-URL = "http://localhost:8000/api/v1/"
 
-for attempt in range(40):
+def hit(label, url, host=None):
+    headers = {"Accept": "text/html"}
+    if host:
+        headers["Host"] = host
     try:
-        req = urllib.request.Request(URL, headers={"Accept": "text/html"})
-        resp = urllib.request.urlopen(req, timeout=25)
-        print("STATUS", resp.getcode(), "(OK, не 500)")
-        break
+        r = urllib.request.urlopen(
+            urllib.request.Request(url, headers=headers), timeout=25
+        )
+        print(label, "STATUS", r.getcode())
     except urllib.error.HTTPError as exc:
-        print("STATUS", exc.code)
-        print("---- RESPONSE BODY (first 9000) ----")
+        print(label, "STATUS", exc.code)
+        print("---- BODY (first 9000) ----")
         print(exc.read().decode("utf-8", "ignore")[:9000])
+    except Exception as exc:  # noqa: BLE001
+        print(label, "ERR", repr(exc))
+
+
+# ждём, пока uvicorn начнёт слушать порт
+for _ in range(40):
+    try:
+        urllib.request.urlopen("http://localhost:8000/api/v1/", timeout=10)
+        break
+    except urllib.error.HTTPError:
         break
     except urllib.error.URLError:
-        # uvicorn ещё не слушает порт — ждём и пробуем снова
         time.sleep(2)
-    except Exception as exc:  # noqa: BLE001
-        print("ERR", repr(exc))
-        break
-else:
-    print("uvicorn не поднялся за ~80с — порт 8000 не отвечает")
+
+hit("[DIRECT uvicorn]", "http://localhost:8000/api/v1/")
+hit("[VIA nginx]", "http://nginx/api/v1/", host="10.145.20.9:4020")
