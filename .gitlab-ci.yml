@@ -66,6 +66,6 @@ reset-db-prod:
     - echo "===== seed (смены/типы/политики/активный цикл) ====="
     - docker compose exec -T web python manage.py seed_initial_data
     - echo "===== superuser admin / 123 ====="
-    - docker compose exec -T web python manage.py shell -c "from django.contrib.auth import get_user_model; U=get_user_model(); u,_=U.objects.get_or_create(username='admin', defaults={'is_staff': True, 'is_superuser': True, 'role': 'admin'}); u.is_staff=True; u.is_superuser=True; u.role='admin'; u.set_password('123'); u.save(); print('superuser admin готов')"
+    - "docker compose exec -T web python manage.py shell -c \"from django.contrib.auth import get_user_model; U=get_user_model(); u,_=U.objects.get_or_create(username='admin', defaults={'is_staff':True,'is_superuser':True,'role':'admin'}); u.is_staff=True; u.is_superuser=True; u.role='admin'; u.set_password('123'); u.save(); print('superuser admin ready')\""
     - echo "===== restart web/worker/beat (свежие соединения с новой БД) ====="
     - docker compose restart web worker beat
