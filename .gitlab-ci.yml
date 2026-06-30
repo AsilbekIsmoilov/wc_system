@@ -49,14 +49,11 @@ logs-prod:
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
   script:
-    - echo "===== docker ps ====="
-    - docker ps --format '{{.Names}}' || true
-    - echo "===== ПРОВЕРКА ТАБЛИЦ (default БД) ====="
-    - docker compose exec -T web python manage.py shell -c "from django.db import connection; t=set(connection.introspection.table_names()); print('ВСЕГО таблиц:', len(t)); [print('  ', n, '->', ('ЕСТЬ' if n in t else 'НЕТ !!!')) for n in ['django_session','django_content_type','auth_permission','django_admin_log','hourly_locks_user','hourly_locks_operator','hourly_locks_cycle','hourly_locks_requesttyperule']]" || true
-    - echo "===== migrate --plan (sessions/admin) ====="
-    - docker compose exec -T web python manage.py showmigrations sessions admin auth || true
-    - echo "===== docker compose logs --tail 250 web ====="
-    - docker compose logs --tail=250 web 2>&1 || true
+    - echo "===== последние логи web (tail 150) ====="
+    - docker compose logs --tail=150 web 2>&1 || true
+    - echo "===== СЕЙЧАС вызови 500 в браузере (admin/123). Слежу 80 секунд LIVE ====="
+    - timeout 80 docker compose logs --tail=0 --follow web 2>&1 || true
+    - echo "===== конец слежения (если выше пусто — 500 не успели вызвать) ====="
 
 deploy-prod:
   extends: .deploy_template
