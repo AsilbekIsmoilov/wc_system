@@ -46,8 +46,9 @@ variables:
     # "table already exists" — помечаем миграции как применённые (--fake).
     - docker compose exec -T web python manage.py migrate --database=archive --noinput || docker compose exec -T web python manage.py migrate --database=archive --fake --noinput
     - docker image prune -f
-    # ВРЕМЕННАЯ диагностика 500 — логи web в job-лог (убрать после)
-    - docker compose logs --tail=120 web || true
+    # ВРЕМЕННАЯ диагностика 500 на /api/v1/ — печатает traceback в job-лог
+    - docker compose exec -T web python manage.py shell -c "from django.test import Client; Client().get('/api/v1/', HTTP_ACCEPT='text/html')" || true
+    - docker compose logs --tail=80 web || true
 
 # ---------- PROD ----------
 build-prod:
