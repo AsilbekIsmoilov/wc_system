@@ -46,6 +46,8 @@ variables:
     # "table already exists" — помечаем миграции как применённые (--fake).
     - docker compose exec -T web python manage.py migrate --database=archive --noinput || docker compose exec -T web python manage.py migrate --database=archive --fake --noinput
     - docker image prune -f
+    # ВРЕМЕННАЯ диагностика 500 — логи web в job-лог (убрать после)
+    - docker compose logs --tail=120 web || true
 
 # ---------- PROD ----------
 build-prod:
