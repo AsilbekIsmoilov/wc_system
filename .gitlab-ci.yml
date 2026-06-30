@@ -33,19 +33,6 @@ variables:
     - docker compose up -d
     - docker image prune -f
 
-# ---------- DEV ----------
-build-dev:
-  extends: .build_template
-  tags: [wfm_dev]
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "dev"'
-
-deploy-dev:
-  extends: .deploy_template
-  tags: [wfm_dev]
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "dev"'
-
 # ---------- PROD ----------
 build-prod:
   extends: .build_template
