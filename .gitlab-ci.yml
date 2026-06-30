@@ -49,10 +49,12 @@ logs-prod:
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
   script:
-    - echo "================ TRACEBACK (most recent call last) ================"
-    - docker compose logs web 2>&1 | grep -A 35 "Traceback (most recent call last)" | tail -200 || true
-    - echo "================ Internal Server Error / Exception in ASGI ================"
-    - docker compose logs web 2>&1 | grep -B2 -A 35 -iE "Internal Server Error|Exception in ASGI" | tail -200 || true
+    - echo "===== docker ps ====="
+    - docker ps --format '{{.Names}}' || true
+    - echo "===== docker compose logs --tail 300 web ====="
+    - docker compose logs --tail=300 web 2>&1 || true
+    - echo "===== docker logs --tail 300 wc_system-web-1 ====="
+    - docker logs --tail=300 wc_system-web-1 2>&1 || true
 
 deploy-prod:
   extends: .deploy_template
