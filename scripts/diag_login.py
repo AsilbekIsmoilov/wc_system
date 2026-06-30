@@ -1,7 +1,7 @@
-"""ВРЕМЕННАЯ диагностика 500 при логине/после логина — РЕАЛЬНЫЙ HTTP через nginx.
+"""ВРЕМЕННАЯ диагностика 500 при логине — имитация РЕАЛЬНОГО браузера через nginx.
 
-Логинится формой admin (с Origin, как браузер), затем запрашивает страницы
-ПОСЛЕ логина (/admin/ index, /api/v1/, me) и печатает тело при 500 (DEBUG=1).
+Полный набор браузерных заголовков + предварительный заход на /api/v1/ (cookies),
+затем логин формой admin. Печатает тело при 500 (DEBUG=1 => traceback).
 """
 import http.cookiejar
 import re
@@ -13,6 +13,22 @@ import urllib.request
 HOST = "10.145.20.9:4020"
 ORIGIN = "http://10.145.20.9:4020"
 BASE = "http://nginx"
+
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+BROWSER = {
+    "Host": HOST,
+    "User-Agent": UA,
+    "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,"
+               "image/avif,image/webp,image/apng,*/*;q=0.8"),
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-User": "?1",
+}
 
 
 def _wait():
@@ -35,41 +51,41 @@ def show(label, r):
         print(label, "STATUS", r.getcode())
 
 
-def login_admin():
-    """GET /admin/login/ -> POST (с Origin). Возвращает authenticated opener."""
-    cj = http.cookiejar.CookieJar()
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
-    url = BASE + "/admin/login/?next=/admin/"
-    g = opener.open(urllib.request.Request(url, headers={"Host": HOST}), timeout=25)
-    html = g.read().decode("utf-8", "ignore")
-    m = re.search(r'name="csrfmiddlewaretoken" value="([^"]+)"', html)
-    form = urllib.parse.urlencode({
-        "username": "admin", "password": "123",
-        "csrfmiddlewaretoken": m.group(1) if m else "", "next": "/admin/",
-    }).encode()
-    resp = opener.open(urllib.request.Request(
-        url, data=form,
-        headers={"Host": HOST, "Origin": ORIGIN, "Referer": url,
-                 "Content-Type": "application/x-www-form-urlencoded"},
-    ), timeout=25)
-    print("[login POST/redirect] STATUS", resp.getcode(), "url:", resp.geturl())
-    return opener
+def get(opener, path, extra=None):
+    h = dict(BROWSER)
+    if extra:
+        h.update(extra)
+    try:
+        return opener.open(urllib.request.Request(BASE + path, headers=h), timeout=25)
+    except urllib.error.HTTPError as e:
+        return e
 
 
 _wait()
-print("=== ЛОГИН + СТРАНИЦЫ ПОСЛЕ ЛОГИНА ===")
+cj = http.cookiejar.CookieJar()
+op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+
+# как браузер: сперва заходим на /api/v1/, потом на форму логина
+show("[GET /api/v1/]", get(op, "/api/v1/"))
+g = get(op, "/admin/login/?next=/admin/")
+show("[GET /admin/login/]", g)
+html = g.read().decode("utf-8", "ignore") if not isinstance(g, urllib.error.HTTPError) else ""
+m = re.search(r'name="csrfmiddlewaretoken" value="([^"]+)"', html)
+form = urllib.parse.urlencode({
+    "username": "admin", "password": "123",
+    "csrfmiddlewaretoken": m.group(1) if m else "", "next": "/admin/",
+}).encode()
+post_headers = dict(BROWSER)
+post_headers.update({
+    "Origin": ORIGIN, "Referer": BASE + "/admin/login/?next=/admin/",
+    "Content-Type": "application/x-www-form-urlencoded",
+    "Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "navigate",
+})
 try:
-    op = login_admin()
-    for p in ["/admin/", "/api/v1/", "/api/v1/auth/me/"]:
-        try:
-            show("[GET " + p + "]", op.open(
-                urllib.request.Request(BASE + p, headers={"Host": HOST, "Accept": "text/html"}),
-                timeout=25))
-        except urllib.error.HTTPError as e:
-            show("[GET " + p + "]", e)
-        except Exception as e:  # noqa: BLE001
-            print("[GET", p, "] ERR", repr(e))
+    r = op.open(urllib.request.Request(
+        BASE + "/admin/login/?next=/admin/", data=form, headers=post_headers), timeout=25)
+    show("[POST /admin/login/]", r)
 except urllib.error.HTTPError as e:
-    show("[login]", e)
-except Exception as e:  # noqa: BLE001
-    print("[login] ERR", repr(e))
+    show("[POST /admin/login/]", e)
+
+show("[GET /admin/ после]", get(op, "/admin/"))
