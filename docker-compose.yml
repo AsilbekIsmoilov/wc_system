@@ -45,12 +45,6 @@ services:
     environment:
       <<: *app-env
       RUN_MIGRATIONS: "1"
-      # ⚠️ "1" = УДАЛИТЬ ВСЕ ДАННЫЕ (default+archive) при старте, затем seed.
-      # Использовать ОДНОРАЗОВО: поставить "1", задеплоить, СРАЗУ вернуть "0"
-      # и задеплоить снова (иначе данные стираются при каждом рестарте).
-      # ВНИМАНИЕ: одноразовый сброс прода сделан миграцией 0054_reset_business_data
-      # (не зависит от этого флага). Здесь оставлено "0".
-      RESET_DB: "0"
     volumes:
       - ./creds.json:/app/creds.json:ro
       - static_volume:/app/staticfiles

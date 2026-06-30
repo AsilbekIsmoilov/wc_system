@@ -7,18 +7,6 @@ if [ "$RUN_MIGRATIONS" = "1" ]; then
   echo "[entrypoint] Applying migrations (archive)..."
   python manage.py migrate --database=archive --noinput
 
-  # ⚠️ ОДНОРАЗОВЫЙ ПОЛНЫЙ СБРОС ДАННЫХ. Включается только при RESET_DB=1.
-  # Удаляет ВСЕ данные (default + archive), схема остаётся (миграции уже
-  # применены выше). Дальше seed восстановит базовые данные и активный цикл.
-  # ВАЖНО: после одного успешного деплоя ВЕРНУТЬ RESET_DB="0" и задеплоить снова,
-  # иначе данные будут стираться при КАЖДОМ рестарте.
-  if [ "$RESET_DB" = "1" ]; then
-    echo "[entrypoint] !!! RESET_DB=1 — УДАЛЕНИЕ ВСЕХ ДАННЫХ (default + archive) !!!"
-    python manage.py flush --noinput
-    python manage.py flush --database=archive --noinput
-    echo "[entrypoint] Все данные удалены. Seed восстановит базовые данные ниже."
-  fi
-
   echo "[entrypoint] Seeding initial data (idempotent)..."
   python manage.py seed_initial_data
 
