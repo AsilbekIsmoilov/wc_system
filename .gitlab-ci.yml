@@ -38,8 +38,13 @@ variables:
     - docker compose up -d --wait
     # 4. Миграции + seed ЯВНО из CI (не зависит от RUN_MIGRATIONS в контейнере).
     - docker compose exec -T web python manage.py migrate --noinput
-    - docker compose exec -T web python manage.py migrate --database=archive --noinput
+    # seed (типы/смены/политики/активный цикл) — критично для работы приложения,
+    # делаем ДО archive, чтобы он отработал даже при проблемах с архивом.
     - docker compose exec -T web python manage.py seed_initial_data
+    # archive: таблицы могли существовать без записи в истории миграций
+    # (прерванная миграция; на MySQL DDL не транзакционна). При конфликте
+    # "table already exists" — помечаем миграции как применённые (--fake).
+    - docker compose exec -T web python manage.py migrate --database=archive --noinput || docker compose exec -T web python manage.py migrate --database=archive --fake --noinput
     - docker image prune -f
 
 # ---------- PROD ----------
