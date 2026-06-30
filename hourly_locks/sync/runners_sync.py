@@ -27,7 +27,7 @@ def _load_watermark():
                 return datetime.fromisoformat(ts)
             except ValueError:
                 return None
-    return None  # None => push everything (first run)
+    return None
 
 
 def _save_watermark(dt):
@@ -66,9 +66,6 @@ def _push(entity, items):
     return len(items)
 
 
-# ---------------------------------------------------------------------------
-# Serializers (Django model -> WFM document)
-# ---------------------------------------------------------------------------
 def _ser_group(g):
     return {"external_id": g.id, "name": g.name, "supervisor_id": g.supervisor_id, "is_active": g.is_active}
 
@@ -104,7 +101,7 @@ def _ser_type_rule(r):
 def _ser_operator(o):
     return {
         "external_id": o.id, "login_id": o.login_id, "surname": o.surname, "name": o.name,
-        "middle_name": o.middle_name, "photo": (str(o.photo) or None) if o.photo else None,"full_name": o.full_name,
+        "middle_name": o.middle_name, "full_name": o.full_name,
         "group_id": o.group_id, "is_active": o.is_active,
     }
 
@@ -169,9 +166,6 @@ def _ser_debt_link(l):
     }
 
 
-# ---------------------------------------------------------------------------
-# Push entrypoints
-# ---------------------------------------------------------------------------
 def push_master_data(since=None) -> dict:
     """Reference data owned by Python: only records changed since the watermark."""
     out = {

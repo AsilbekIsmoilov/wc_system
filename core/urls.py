@@ -5,6 +5,7 @@ from django.conf.urls.static import static
 from hourly_locks.sync.apply_view import ApplyRequestView  # WFM -> Python apply
 from hourly_locks.sync.sync_ingest import UpsertView, DeleteView  # WFM -> Python CRUD
 
+
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api-auth/', include('rest_framework.urls')),
@@ -12,7 +13,6 @@ urlpatterns = [
     path('api/sync/upsert/<entity>', UpsertView.as_view()),
     path('api/sync/delete/<entity>', DeleteView.as_view()),
     path('', include('hourly_locks.urls')),
-    path('api/bonus/v1/', include('bonus_api.urls')),
     path('api/attendance/v1/', include('attendance.urls')),
 
 ]

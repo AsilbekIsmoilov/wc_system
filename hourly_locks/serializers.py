@@ -11,6 +11,7 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from .models import (
     AutomationOverride,
     Compensation,
+    CompensationDay,
     CompensationDebtLink,
     Cycle,
     EventLog,
@@ -70,7 +71,6 @@ class GroupSerializer(GroupShortSerializer):
                 "id": op.id,
                 "login_id": op.login_id,
                 "name": op.full_name,
-                "photo": op.photo.url if op.photo else None,
             }
             for op in obj.operators.filter(is_active=True)[:50]
         ]
@@ -86,40 +86,24 @@ class OperatorMiniSerializer(serializers.ModelSerializer):
 
 class OperatorLightSerializer(serializers.ModelSerializer):
     group_name = serializers.CharField(source="group.name", read_only=True, default=None)
-    photo = serializers.SerializerMethodField()
     role = serializers.CharField(read_only=True)
 
     class Meta:
         model = Operator
         fields = [
             "id", "login_id", "surname", "name", "middle_name",
-            "group_name", "photo", "role", "is_active",
+            "group_name", "role", "is_active",
         ]
-
-    def get_photo(self, obj):
-        if not obj.photo:
-            return None
-        request = self.context.get("request")
-        url = obj.photo.url
-        return request.build_absolute_uri(url) if request else url
 
 
 class OperatorSerializer(serializers.ModelSerializer):
     group = GroupShortSerializer(read_only=True)
-    photo = serializers.SerializerMethodField()
     role = serializers.CharField(read_only=True)
     full_name = serializers.CharField(read_only=True)
 
     class Meta:
         model = Operator
         fields = "__all__"
-
-    def get_photo(self, obj):
-        if not obj.photo:
-            return None
-        request = self.context.get("request")
-        url = obj.photo.url
-        return request.build_absolute_uri(url) if request else url
 
 
 class UserShortSerializer(serializers.ModelSerializer):
@@ -474,9 +458,161 @@ class CompensationSerializer(serializers.ModelSerializer):
         compensation.save(update_fields=["debts_snapshot", "updated_at"])
 
 
+class CompensationDaySerializer(serializers.ModelSerializer):
+    """День отработки в составе заявки."""
+
+    class Meta:
+        model = CompensationDay
+        fields = [
+            "id", "day", "allocated_duration", "status",
+            "credited_duration", "fact_full", "fact_lock",
+            "verified_at", "note",
+        ]
+
+
 class CompensationDetailSerializer(CompensationSerializer):
-    """Для retrieve — с CompensationDebtLink."""
+    """Для retrieve — с CompensationDebtLink и днями отработки."""
     debt_links = CompensationDebtLinkSerializer(many=True, read_only=True)
+    days = CompensationDaySerializer(many=True, read_only=True)
+
+
+# =============================================================================
+# Отработка (otrabotka) — приём заявки
+# =============================================================================
+
+class OtrabotkaAcceptSerializer(serializers.Serializer):
+    """
+    Вход для preview/accept заявки отработки.
+
+    requested_duration НЕ принимается с фронта — считается как сумма
+    выбранных записей долга. Дни — в пределах активного цикла.
+    """
+    operator_id = serializers.IntegerField()
+    debt_detail_ids = serializers.ListField(
+        child=serializers.IntegerField(), allow_empty=False,
+    )
+    days = serializers.ListField(
+        child=serializers.DateField(), allow_empty=False,
+    )
+    comment = serializers.CharField(
+        required=False, allow_blank=True, default="",
+    )
+    pdf_file = serializers.FileField(required=False, allow_null=True)
+    screens = serializers.ImageField(required=False, allow_null=True)
+
+    def validate_operator_id(self, value):
+        if not Operator.objects.filter(id=value).exists():
+            raise serializers.ValidationError("Оператор не найден.")
+        return value
+
+
+class DebtCompensationAcceptSerializer(serializers.Serializer):
+    """
+    Вход для preview/accept прямого списания долга компенсацией
+    (любой тип compensation, КРОМЕ otrabotka).
+
+    applied_duration — необязательно: списываемая сумма. Если не задана —
+    списывается вся сумма выбранных долгов; если меньше — на остаток
+    создаётся одна запись долга.
+    """
+    operator_id = serializers.IntegerField()
+    code = serializers.CharField()
+    debt_detail_ids = serializers.ListField(
+        child=serializers.IntegerField(), allow_empty=False,
+    )
+    applied_duration = serializers.DurationField(required=False, allow_null=True)
+    comment = serializers.CharField(
+        required=False, allow_blank=True, default="",
+    )
+    pdf_file = serializers.FileField(required=False, allow_null=True)
+    screens = serializers.ImageField(required=False, allow_null=True)
+
+    def validate_operator_id(self, value):
+        if not Operator.objects.filter(id=value).exists():
+            raise serializers.ValidationError("Оператор не найден.")
+        return value
+
+    def validate_code(self, value):
+        if value == "otrabotka":
+            raise serializers.ValidationError(
+                "Для отработки используйте endpoint otrabotka."
+            )
+        return value
+
+
+class OtprashivanieAcceptSerializer(serializers.Serializer):
+    """
+    Вход для preview/accept заявки отпрашивания (Transfer, тип otprashivanie).
+
+    Один/несколько операторов, один/несколько РАБОЧИХ дней отгула в окне
+    hour_from–hour_to, и дни отработки (отпрошенные часы делятся по ним).
+    """
+    operator_ids = serializers.ListField(
+        child=serializers.IntegerField(), allow_empty=False,
+    )
+    leave_days = serializers.ListField(
+        child=serializers.DateField(), allow_empty=False,
+    )
+    hour_from = serializers.TimeField()
+    hour_to = serializers.TimeField()
+    workoff_days = serializers.ListField(
+        child=serializers.DateField(), allow_empty=False,
+    )
+    comment = serializers.CharField(required=False, allow_blank=True, default="")
+    pdf_file = serializers.FileField(required=False, allow_null=True)
+    screens = serializers.ImageField(required=False, allow_null=True)
+
+
+class UchebaAcceptSerializer(serializers.Serializer):
+    """
+    Вход для preview/accept заявки «Учёба в рабочее время» (Transfer).
+    Один/несколько операторов, рабочие дни, окно учёбы (hour_from–hour_to).
+    """
+    operator_ids = serializers.ListField(
+        child=serializers.IntegerField(), allow_empty=False,
+    )
+    days = serializers.ListField(
+        child=serializers.DateField(), allow_empty=False,
+    )
+    hour_from = serializers.TimeField()
+    hour_to = serializers.TimeField()
+    comment = serializers.CharField(required=False, allow_blank=True, default="")
+    pdf_file = serializers.FileField(required=False, allow_null=True)
+    screens = serializers.ImageField(required=False, allow_null=True)
+
+
+class BenefitAcceptSerializer(serializers.Serializer):
+    """
+    Вход для preview/accept заявки-льготы (Исключение/Обучение/Льготы/Хоз.работы).
+
+    Операторы: явный список operator_ids ИЛИ select_all_shift ("9h"/"12h").
+    Дни — список (только рабочие). Часы (hour_from/hour_to) — необязательно:
+    без часов = весь день; с часами = частичное освобождение.
+    """
+    operator_ids = serializers.ListField(
+        child=serializers.IntegerField(), required=False, allow_empty=True, default=list,
+    )
+    select_all_shift = serializers.ChoiceField(
+        choices=["9h"], required=False, allow_null=True,
+    )
+    code = serializers.CharField()
+    subtype = serializers.ChoiceField(
+        choices=["otgul", "korotkiy_den"], required=False, allow_null=True,
+    )
+    days = serializers.ListField(
+        child=serializers.DateField(), allow_empty=False,
+    )
+    hour_from = serializers.TimeField(required=False, allow_null=True)
+    hour_to = serializers.TimeField(required=False, allow_null=True)
+    comment = serializers.CharField(required=False, allow_blank=True, default="")
+    pdf_file = serializers.FileField(required=False, allow_null=True)
+    screens = serializers.ImageField(required=False, allow_null=True)
+
+    def validate(self, attrs):
+        if not attrs.get("operator_ids") and not attrs.get("select_all_shift"):
+            raise serializers.ValidationError(
+                "Укажите operator_ids или select_all_shift.")
+        return attrs
 
 
 # =============================================================================

@@ -38,6 +38,16 @@ logger = logging.getLogger(__name__)
 # Проверка одного лога (бывший check_debt)
 # =============================================================================
 
+def _hms(delta) -> str:
+    """Длительность H:MM:SS (с минусом для отрицательных)."""
+    if delta is None:
+        delta = timedelta(0)
+    total = int(delta.total_seconds())
+    sign = "-" if total < 0 else ""
+    total = abs(total)
+    return f"{sign}{total // 3600}:{(total % 3600) // 60:02d}:{total % 60:02d}"
+
+
 def check_debt_for_log(log: WorkLogDaily) -> Dict:
     """
     Проверяет один WorkLogDaily на наличие долга по правилам смены.
@@ -52,109 +62,73 @@ def check_debt_for_log(log: WorkLogDaily) -> Dict:
     shift = log.shift
     full = log.full_duration or timedelta()
     lock = log.lock_duration or timedelta()
+    Z = timedelta(0)
 
     if not shift:
         return _empty_result(note=f"Неизвестная смена для {log.day}")
 
-    norm_full = shift.norm_full
-    norm_lock = shift.norm_lock_soft_cap
-    tolerance = shift.tolerance_undertime
+    norm_full = shift.norm_full or Z          # полная смена (9:00 / 8:00 / 12:00)
+    tolerance = shift.tolerance_undertime or Z
 
-    result = {
-        "debt_full": timedelta(),
-        "debt_lock": timedelta(),
-        "norm_full": norm_full,
-        "norm_lock": norm_lock,
-        "violation_type": None,
-        "make_up_wh": timedelta(),
-        "note": None,
-    }
-
-    notes = []
-    has_insufficient_wh = False
-    has_exceeding_break = False
-
-    # ----- Проверка недоработки -----
-    if tolerance > timedelta(0):
-        if full + tolerance < norm_full:
-            df = norm_full - full
-            result["debt_full"] = df
-            has_insufficient_wh = True
-            notes.append(
-                f"Недоработка (учёт допуска {tolerance}): {df} "
-                f"(факт={full}, норма={norm_full})"
-            )
-        else:
-            notes.append(
-                f"Недоработка в пределах допуска {tolerance} "
-                f"(факт={full}, норма={norm_full}) — без долга"
-            )
+    # Норма перерыва и порог (grace):
+    #   9h/8h: норма = warn_at (1:30), мягкий порог = soft_cap (1:45)
+    #   12h:   норма = soft_cap (2:20), grace = 0
+    if shift.norm_lock_warn_at and shift.norm_lock_warn_at > Z:
+        lock_norm = shift.norm_lock_warn_at
+        soft_cap = shift.norm_lock_soft_cap or lock_norm
     else:
-        if full < norm_full:
-            df = norm_full - full
-            result["debt_full"] = df
-            has_insufficient_wh = True
-            notes.append(f"Недоработка: {df} (факт={full})")
+        lock_norm = shift.norm_lock_soft_cap or Z
+        soft_cap = lock_norm
+    grace = max(soft_cap - lock_norm, Z)
 
-    # ----- Проверка перерыва -----
-    if lock > norm_lock:
-        extra_break = lock - norm_lock
-        extra_full_pos = max(full - norm_full, timedelta(0))
-        result["make_up_wh"] = extra_full_pos
+    work_norm = max(norm_full - lock_norm, Z)  # норма рабочих часов (7:30 / 6:30 / 9:40)
+    work_hours = full - lock                   # фактические рабочие часы
 
-        # Для 9-часовых смен используется warn_at (например 1:30)
-        warn_at = shift.norm_lock_warn_at
-        is_9h_logic = warn_at > timedelta(0)
+    # ----- Общий долг по рабочим часам (с послаблением перерыва) -----
+    work_shortfall = max(work_norm - work_hours, Z)
+    lock_over = max(lock - lock_norm, Z)
+    forgiven = min(lock_over, grace) if lock <= soft_cap else Z
+    total = max(work_shortfall - forgiven, Z)
 
-        if is_9h_logic:
-            if lock > warn_at:
-                effective_overbreak = (lock - warn_at) - extra_full_pos
-                if effective_overbreak < timedelta(0):
-                    effective_overbreak = timedelta(0)
+    # ----- Разбивка: присутствие (недоработка) vs перерыв (штраф) -----
+    presence_deficit = max(norm_full - full, Z)   # опоздание / ранний уход / неявка
+    debt_full = min(total, presence_deficit)
+    debt_lock = total - debt_full
 
-                if effective_overbreak > timedelta(0):
-                    result["debt_lock"] = effective_overbreak
-                    has_exceeding_break = True
-                    notes.append(
-                        f"Перерыв превышен: lock={lock} (штраф от {warn_at}), "
-                        f"допуск {norm_lock}, переработка={extra_full_pos}, "
-                        f"остаток={effective_overbreak} (в долг)"
-                    )
-                else:
-                    notes.append(
-                        f"Перерыв превышен: lock={lock}, "
-                        f"но компенсирован переработкой {extra_full_pos} — без долга"
-                    )
-            else:
-                notes.append(f"Перерыв ≤ {warn_at} — в норме (lock={lock})")
-        else:
-            effective_overbreak = extra_break - extra_full_pos
-            if effective_overbreak < timedelta(0):
-                effective_overbreak = timedelta(0)
+    # ----- Допуск недоработки (только для смены) — порог на часть присутствия -----
+    if tolerance > Z and Z < debt_full <= tolerance:
+        debt_full = Z
 
-            if effective_overbreak > timedelta(0):
-                result["debt_lock"] = effective_overbreak
-                has_exceeding_break = True
-                notes.append(
-                    f"Перерыв превышен: lock={lock} > {norm_lock} (+{extra_break}), "
-                    f"переработка={extra_full_pos}, остаток={effective_overbreak} (в долг)"
-                )
-            else:
-                notes.append(
-                    f"Перерыв превышен на {extra_break}, "
-                    f"но компенсирован переработкой {extra_full_pos} — без долга"
-                )
+    make_up_wh = max(full - norm_full, Z)         # переработка (доделал), компенсирует перерыв
 
-    # ----- Тип нарушения -----
+    has_insufficient_wh = debt_full > Z
+    has_exceeding_break = debt_lock > Z
     if has_insufficient_wh and has_exceeding_break:
-        result["violation_type"] = "both_violations"
+        violation_type = "both_violations"
     elif has_insufficient_wh:
-        result["violation_type"] = "insufficient_wh"
+        violation_type = "insufficient_wh"
     elif has_exceeding_break:
-        result["violation_type"] = "exceeding_break"
+        violation_type = "exceeding_break"
+    else:
+        violation_type = None
 
-    result["note"] = " | ".join(notes) if notes else None
-    return result
+    note = (
+        f"Рабочие часы (факт−перерыв): {_hms(work_hours)} при норме {_hms(work_norm)}.\n"
+        f"Перерыв: факт {_hms(lock)}, норма {_hms(lock_norm)}, порог {_hms(soft_cap)}"
+        + (f", послабление {_hms(forgiven)}" if forgiven > Z else "")
+        + (f", переработка {_hms(make_up_wh)}" if make_up_wh > Z else "")
+        + f".\nДолг: недоработка {_hms(debt_full)}, перерыв {_hms(debt_lock)}."
+    )
+
+    return {
+        "debt_full": debt_full,
+        "debt_lock": debt_lock,
+        "norm_full": work_norm,
+        "norm_lock": lock_norm,
+        "violation_type": violation_type,
+        "make_up_wh": make_up_wh,
+        "note": note,
+    }
 
 
 def _empty_result(note: str = "") -> Dict:
@@ -201,27 +175,43 @@ def calculate_work_debts(for_date: date) -> dict:
         exempts_from_daily_debt=True,
         is_active=True,
     )
-
-    exempt_qs = Transfer.objects.filter(
-        type_rule__in=exempt_rules,
-        status__in=["pending", "in_progress", "approved"],
-        date_from__lte=for_date,
-        date_to__gte=for_date,
-    ).select_related("type_rule")
+    EXEMPT_STATUSES = ["pending", "in_progress", "approved"]
 
     exempt_full_ids = set()  # operator_id, полностью освобождённые
     exempt_partial = {}  # operator_id → {"duration": ..., "type_code": ...}
 
-    for transfer in exempt_qs:
-        rule = transfer.type_rule
-        op_id = transfer.operator_id
+    def _add_partial(op_id, dur, code):
+        prev = exempt_partial.get(op_id, {}).get("duration", timedelta(0))
+        exempt_partial[op_id] = {"duration": prev + dur, "type_code": code}
 
-        # Если есть длительность — частичное освобождение (например, time_off)
+    # (1) Льготы по-дневно (BenefitDay): одна заявка покрывает несколько
+    #     (в т.ч. непоследовательных) дней — освобождаем именно эти дни.
+    from hourly_locks.models import BenefitDay
+    for bd in BenefitDay.objects.filter(
+        day=for_date,
+        transfer__type_rule__in=exempt_rules,
+        transfer__status__in=EXEMPT_STATUSES,
+    ).select_related("transfer", "transfer__type_rule"):
+        op_id = bd.transfer.operator_id
+        if bd.duration and bd.duration > timedelta(0):
+            _add_partial(op_id, bd.duration, bd.transfer.type_rule.code)
+        else:
+            exempt_full_ids.add(op_id)  # весь день
+
+    # (2) Прочие exempt-заявки по ДИАПАЗОНУ дат, у которых нет BenefitDay
+    #     (напр. ucheba_rabochee, старые заявки) — прежняя логика.
+    exempt_qs = Transfer.objects.filter(
+        type_rule__in=exempt_rules,
+        status__in=EXEMPT_STATUSES,
+        date_from__lte=for_date,
+        date_to__gte=for_date,
+        benefit_days__isnull=True,
+    ).select_related("type_rule").distinct()
+
+    for transfer in exempt_qs:
+        op_id = transfer.operator_id
         if transfer.requested_duration and transfer.requested_duration > timedelta(0):
-            exempt_partial[op_id] = {
-                "duration": transfer.requested_duration,
-                "type_code": rule.code,
-            }
+            _add_partial(op_id, transfer.requested_duration, transfer.type_rule.code)
         else:
             exempt_full_ids.add(op_id)
 
@@ -250,6 +240,17 @@ def calculate_work_debts(for_date: date) -> dict:
         .values_list("operator_id", flat=True)
     )
 
+    # Учёба в рабочее время: дневную норму считает services.ucheba (по
+    # расширенному окну), поэтому обычный расчёт пропускаем.
+    from hourly_locks.models import UchebaDay
+    ucheba_op_ids = set(
+        UchebaDay.objects.filter(
+            day=for_date,
+            transfer__type_rule__code="ucheba_rabochee",
+            transfer__status__in=["pending", "approved", "partial"],
+        ).values_list("transfer__operator_id", flat=True)
+    )
+
     # Основной цикл
     logs = WorkLogDaily.objects.filter(day=for_date).select_related(
         "operator", "shift",
@@ -273,7 +274,19 @@ def calculate_work_debts(for_date: date) -> dict:
                 stats["skipped"] += 1
                 continue
 
+            if op_id in ucheba_op_ids:
+                # день учёбы — норму считает services.ucheba (расш. окно)
+                stats["skipped"] += 1
+                continue
+
             if op_id in exempt_full_ids:
+                # Полное освобождение (льгота/отгул на весь день): убираем
+                # существующий (не привязанный к компенсации) долг за день,
+                # чтобы льгота, принятая ПОСЛЕ расчёта, тоже обнуляла долг.
+                WorkDebtDetail.objects.filter(
+                    operator=operator, day=log.day, source="shift",
+                    locked_for_compensation=False,
+                ).delete()
                 stats["skipped"] += 1
                 continue
 
@@ -405,9 +418,9 @@ def _handle_partial_exempt(
         remaining_debt = timedelta(0)
 
     note = (
-        f"Частичное освобождение ({type_code}): длительность {skip_duration}, "
-        f"факт={log.full_duration}, перерыв={log.lock_duration}, "
-        f"дневной долг={day_total_debt}, остаток={remaining_debt}"
+        f"Частичное освобождение ({type_code}): длительность {skip_duration}.\n"
+        f"Факт={log.full_duration}, перерыв={log.lock_duration}.\n"
+        f"Дневной долг={day_total_debt}, остаток={remaining_debt}."
     )
 
     WorkDebtDetail.objects.update_or_create(

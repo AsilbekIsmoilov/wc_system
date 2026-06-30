@@ -66,7 +66,7 @@ ENTITIES = {
     }),
     "operators": (Operator, {
         "login_id": P, "surname": P, "name": P, "middle_name": P,
-        "photo": P, "group_id": P, "is_active": P,
+        "group_id": P, "is_active": P,
     }),
     "work-debts": (WorkDebt, {
         "operator_id": P, "cycle_id": P, "current_debt": D, "total_accumulated": D,

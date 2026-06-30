@@ -128,9 +128,16 @@ def _fetch_fact_for_day(operator, for_date):
         operator=operator, day=for_date,
     ).select_related("shift").first()
 
-    if schedule and schedule.shift and schedule.shift.code in {"17-02", "18-03", "15-24"}:
+    # 24ч-ПЛИТКА (08:00 → 08:00 след.дня) для ночных смен и выходных дней
+    # отработки: дни отработки идут подряд без перекрытия (нет двойного счёта)
+    # и захватывается отработка днём ДО начала ночной смены (напр. 20-08).
+    shift_code = schedule.shift.code if (schedule and schedule.shift) else None
+    is_night_tile = shift_code in {"17-02", "18-03", "15-24", "20-08"}
+    is_day_off = (not schedule) or schedule.is_day_off or not schedule.shift_id
+
+    if is_night_tile or is_day_off:
         day_data = external_api.fetch_hours_range(for_date, range(8, 24))
-        next_data = external_api.fetch_hours_range(for_date + timedelta(days=1), range(0, 13))
+        next_data = external_api.fetch_hours_range(for_date + timedelta(days=1), range(0, 8))
     else:
         day_data = external_api.fetch_hours_range(for_date, range(6, 23))
         next_data = {}

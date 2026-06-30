@@ -9,6 +9,7 @@ from django.utils.html import format_html
 from .models import (
     AutomationOverride,
     Compensation,
+    CompensationDay,
     CompensationDebtLink,
     Cycle,
     EventLog,
@@ -299,6 +300,12 @@ class CompensationDebtLinkInline(admin.TabularInline):
     readonly_fields = ("snapshot", "created_at", "updated_at")
 
 
+class CompensationDayInline(admin.TabularInline):
+    model = CompensationDay
+    extra = 0
+    readonly_fields = ("created_at", "updated_at")
+
+
 @admin.register(Compensation)
 class CompensationAdmin(admin.ModelAdmin):
     list_display = (
@@ -320,7 +327,7 @@ class CompensationAdmin(admin.ModelAdmin):
         "created_at", "updated_at", "verified_at",
         "auto_check_result", "auto_check_at", "debts_snapshot",
     )
-    inlines = [CompensationDebtLinkInline]
+    inlines = [CompensationDayInline, CompensationDebtLinkInline]
 
     def status_colored(self, obj):
         colors = {

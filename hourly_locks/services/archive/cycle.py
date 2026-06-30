@@ -37,8 +37,8 @@ def archive_cycle_data(cycle: Cycle) -> dict:
     Архивирует все данные цикла, затем удаляет их из default DB.
 
     Стадии:
-      0. Cross-cycle re-pointing (заявки с planned_date в новом цикле
-         переносятся, а не архивируются).
+      0. ВРЕМЕННО: pending Compensation → declined; pending/in_progress
+         Transfer → перенос на новый цикл (не архивируются).
       1. Снапшот операторов (для исторических ссылок).
       2. Архивация Compensation.
       3. Архивация Transfer.
@@ -52,7 +52,8 @@ def archive_cycle_data(cycle: Cycle) -> dict:
 
     stats = {}
 
-    # 0. Cross-cycle re-pointing — ВАЖНО: до архивации!
+    # 0. pending Comp → declined; pending/in_progress Transfer → перенос
+    #    (ВАЖНО: до архивации, чтобы перенесённые Transfer не попали в архив).
     stats["repointed"] = _repoint_cross_cycle_requests(cycle)
 
     # 1. Снапшот операторов
@@ -93,90 +94,51 @@ def archive_cycle_data(cycle: Cycle) -> dict:
 @transaction.atomic
 def _repoint_cross_cycle_requests(cycle: Cycle) -> dict:
     """
-    Заявки, у которых planned_date / date_to УЖЕ В НОВОМ цикле,
-    не нужно архивировать — нужно перепривязать к новому циклу.
+    ВРЕМЕННОЕ решение при закрытии цикла:
 
-    Compensation с CompensationDebtLink на WDD текущего цикла:
-      - Перепривязываются на новый цикл
-      - В snapshot каждого link записывается archive_year/month +
-        archive_wdd_id, чтобы потом найти долг в архиве
-      - debt_detail в default DB станет null после архивации
-      - При verify в новом цикле _apply_debt_links увидит archive_ref
-        и обновит ArchiveWorkDebt + ArchiveWorkDebtDetail (cross-DB credit)
+      - Compensation со статусом «pending» → «declined». Затем (на стадии 2)
+        они архивируются как declined и удаляются из default DB вместе с
+        остальными. Carry-over для компенсаций НЕ делаем.
 
-    Возвращает {compensations: N, transfers: N, links_marked: N}.
+      - Transfer со статусом «pending» / «in_progress» НЕ архивируются: они
+        переносятся (re-point) на новый цикл и продолжают жить. В архив уйдут
+        только когда станут терминальными (completed и т.п.) — при закрытии
+        следующего цикла. Остальные статусы Transfer (approved/partial/declined/
+        completed) архивируются как обычно.
+
+    Возвращает {compensations_declined: N, transfers_carried_over: N}.
     """
     from hourly_locks.services.cycle import get_or_create_active_cycle
 
     next_cycle_start = cycle.end_date + timedelta(days=1)
     next_cycle = get_or_create_active_cycle(today=next_cycle_start)
 
-    # 1. Все Compensation с planned_date в новом цикле
-    comp_qs = Compensation.objects.filter(
-        cycle=cycle,
-        status__in=["pending", "in_progress"],
-        planned_date__gt=cycle.end_date,
-    )
-
-    # 1a. Помечаем все debt_links на архивирующиеся WDD — добавляем archive_ref в snapshot
-    from hourly_locks.models import CompensationDebtLink, WorkDebtDetail
-
-    links_to_mark = CompensationDebtLink.objects.filter(
-        compensation__in=comp_qs,
-        applied=False,
-        debt_detail__cycle=cycle,  # WDD текущего цикла = будет архивирован
-    ).select_related("debt_detail")
-
-    links_marked = 0
-    for link in links_to_mark:
-        wdd = link.debt_detail
-        if not wdd:
-            continue
-        # Обновляем snapshot — добавляем archive-ссылки
-        snap = dict(link.snapshot or {})
-        snap.update({
-            "archive_year": cycle.year,
-            "archive_month": cycle.month,
-            "operator_id": wdd.operator_id,
-            "day": str(wdd.day),
-            "source": wdd.source,
-            "shift_code_snapshot": wdd.shift_code_snapshot,
-            "debt_full": str(wdd.debt_full),
-            "debt_lock": str(wdd.debt_lock),
-            "original_wdd_id": wdd.id,
-        })
-        link.snapshot = snap
-        link.save(update_fields=["snapshot", "updated_at"])
-        links_marked += 1
-
-    # 1b. Перепривязываем все Compensation на новый цикл
-    comp_count = comp_qs.count()
-    if comp_count:
-        comp_qs.update(cycle=next_cycle)
+    # 1. Compensation: все pending → declined (carry-over не делаем)
+    comp_declined = Compensation.objects.filter(
+        cycle=cycle, status="pending",
+    ).update(status="declined")
+    if comp_declined:
         logger.info(
-            "[archive_cycle] Перепривязано %d Compensation на новый цикл #%d "
-            "(в т.ч. %d debt_links отмечены для cross-DB credit)",
-            comp_count, next_cycle.id, links_marked,
+            "[archive_cycle] %d pending Compensation → declined (перед архивацией)",
+            comp_declined,
         )
 
-    # 2. Transfer: date_from в новом цикле → перепривязываем
+    # 2. Transfer: pending / in_progress → перенос на новый цикл (не архивируем)
     tr_qs = Transfer.objects.filter(
-        cycle=cycle,
-        status__in=["pending", "in_progress"],
-        date_from__gt=cycle.end_date,
+        cycle=cycle, status__in=["pending", "in_progress"],
     )
-    tr_count = tr_qs.count()
-    if tr_count:
+    tr_carried = tr_qs.count()
+    if tr_carried:
         tr_qs.update(cycle=next_cycle)
         logger.info(
-            "[archive_cycle] Перепривязано %d Transfer на новый цикл #%d",
-            tr_count, next_cycle.id,
+            "[archive_cycle] %d Transfer (pending/in_progress) перенесено на "
+            "новый цикл #%d (архивируются после completed)",
+            tr_carried, next_cycle.id,
         )
 
     return {
-        "compensations": comp_count,
-        "transfers": tr_count,
-        "links_marked_for_archive_credit": links_marked,
+        "compensations_declined": comp_declined,
+        "transfers_carried_over": tr_carried,
     }
 
 
@@ -363,8 +325,11 @@ def _cleanup_default_db(cycle: Cycle):
     # 2. Compensation
     deleted_comp, _ = Compensation.objects.filter(cycle=cycle).delete()
 
-    # 3. Transfer
-    deleted_tr, _ = Transfer.objects.filter(cycle=cycle).delete()
+    # 3. Transfer — кроме pending/in_progress (они перенесены на новый цикл
+    #    и НЕ должны удаляться). Защита на случай оставшихся.
+    deleted_tr, _ = Transfer.objects.filter(cycle=cycle).exclude(
+        status__in=["pending", "in_progress"],
+    ).delete()
 
     # 4. WorkDebtDetail
     deleted_wdd, _ = WorkDebtDetail.objects.filter(cycle=cycle).delete()

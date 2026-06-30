@@ -57,6 +57,11 @@ from .serializers import (
     CompensationDetailSerializer,
     CompensationSerializer,
     CycleSerializer,
+    BenefitAcceptSerializer,
+    DebtCompensationAcceptSerializer,
+    OtprashivanieAcceptSerializer,
+    OtrabotkaAcceptSerializer,
+    UchebaAcceptSerializer,
     EventLogSerializer,
     GroupSerializer,
     ManualAdjustmentSerializer,
@@ -378,6 +383,237 @@ class CompensationViewSet(viewsets.ModelViewSet):
             cycle = get_or_create_active_cycle()
             verify_single_compensation(comp, comp.planned_date, cycle)
 
+    # ------------------------------------------------------------------ #
+    # Отработка (otrabotka) — приём заявки
+    # ------------------------------------------------------------------ #
+
+    def _resolve_otrabotka_operator(self, request, operator_id):
+        """Найти оператора с проверкой прав. Возвращает (operator, error_response)."""
+        try:
+            operator = Operator.objects.get(id=operator_id)
+        except Operator.DoesNotExist:
+            return None, Response(
+                {"detail": "Оператор не найден"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        user = request.user
+        if user.role == "operator":
+            op = getattr(user, "operator", None)
+            if not op or op.id != operator.id:
+                return None, Response(
+                    {"detail": "Нельзя подавать заявку за другого оператора"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+        elif user.role == "supervisor":
+            group_ids = set(user.supervised_groups.values_list("id", flat=True))
+            if operator.group_id not in group_ids:
+                return None, Response(
+                    {"detail": "Оператор вне ваших групп"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+        return operator, None
+
+    @action(detail=False, methods=["get"], url_path="otrabotka/disabled-days")
+    def otrabotka_disabled_days(self, request):
+        """Дни, недоступные для новой заявки отработки оператора в активном цикле."""
+        from .services.cycle import get_or_create_active_cycle
+        from .services.otrabotka import get_disabled_days
+
+        operator_id = request.query_params.get("operator_id")
+        if not operator_id:
+            return Response(
+                {"detail": "operator_id обязателен"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        operator, err = self._resolve_otrabotka_operator(request, operator_id)
+        if err:
+            return err
+
+        cycle = get_or_create_active_cycle()
+        return Response({
+            "operator_id": operator.id,
+            "cycle": {
+                "start_date": str(cycle.start_date),
+                "end_date": str(cycle.end_date),
+            },
+            "disabled_days": get_disabled_days(operator, cycle),
+        })
+
+    @action(detail=False, methods=["post"], url_path="otrabotka/preview")
+    def otrabotka_preview(self, request):
+        """Сухой прогон: конфликты + распределение по дням (без записи в БД)."""
+        from .services.otrabotka import OtrabotkaError, preview_otrabotka
+
+        serializer = OtrabotkaAcceptSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        operator, err = self._resolve_otrabotka_operator(request, data["operator_id"])
+        if err:
+            return err
+
+        try:
+            result = preview_otrabotka(
+                operator=operator,
+                debt_detail_ids=data["debt_detail_ids"],
+                days=data["days"],
+            )
+        except OtrabotkaError as exc:
+            return Response(
+                {"detail": exc.message, "code": exc.code, **exc.payload},
+                status=exc.http_status,
+            )
+        return Response(result)
+
+    @action(detail=False, methods=["post"], url_path="otrabotka")
+    def otrabotka_accept(self, request):
+        """Принять заявку отработки (после подтверждения ha/yo'q)."""
+        from .services.otrabotka import OtrabotkaError, accept_otrabotka
+
+        serializer = OtrabotkaAcceptSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        operator, err = self._resolve_otrabotka_operator(request, data["operator_id"])
+        if err:
+            return err
+
+        source = "requested" if request.user.role == "operator" else "manual"
+        try:
+            comp = accept_otrabotka(
+                operator=operator,
+                debt_detail_ids=data["debt_detail_ids"],
+                days=data["days"],
+                comment=data.get("comment", ""),
+                user=request.user,
+                source=source,
+                pdf_file=data.get("pdf_file"),
+                screens=data.get("screens"),
+            )
+        except OtrabotkaError as exc:
+            return Response(
+                {"detail": exc.message, "code": exc.code, **exc.payload},
+                status=exc.http_status,
+            )
+
+        return Response(
+            CompensationDetailSerializer(comp, context={"request": request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=False, methods=["post"], url_path="otrabotka/retroactive")
+    def otrabotka_retroactive(self, request):
+        """
+        Ретроактивная отработка: оператор УЖЕ отработал долг в прошедшие дни
+        цикла. Заявка принимается и СРАЗУ проверяется по факту (verify) —
+        статус approved/partial/declined проставляется на месте.
+        (Обычная проверка otrabotka — автоматическая, в дневном пайплайне.)
+        """
+        from .services.otrabotka import OtrabotkaError, accept_otrabotka
+
+        serializer = OtrabotkaAcceptSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        operator, err = self._resolve_otrabotka_operator(request, data["operator_id"])
+        if err:
+            return err
+
+        try:
+            comp = accept_otrabotka(
+                operator=operator,
+                debt_detail_ids=data["debt_detail_ids"],
+                days=data["days"],
+                comment=data.get("comment", ""),
+                user=request.user,
+                pdf_file=data.get("pdf_file"),
+                screens=data.get("screens"),
+                retroactive=True,
+            )
+        except OtrabotkaError as exc:
+            return Response(
+                {"detail": exc.message, "code": exc.code, **exc.payload},
+                status=exc.http_status,
+            )
+
+        return Response(
+            CompensationDetailSerializer(comp, context={"request": request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Прямое списание долга (любой тип compensation, КРОМЕ otrabotka)
+    # ------------------------------------------------------------------ #
+
+    @action(detail=False, methods=["post"], url_path="debt/preview")
+    def debt_comp_preview(self, request):
+        """Сухой прогон списания: сумма долгов, списываемая сумма, остаток."""
+        from .services.debt_compensation import (
+            DebtCompensationError, preview_debt_compensation,
+        )
+
+        serializer = DebtCompensationAcceptSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        operator, err = self._resolve_otrabotka_operator(request, data["operator_id"])
+        if err:
+            return err
+
+        try:
+            result = preview_debt_compensation(
+                operator=operator,
+                code=data["code"],
+                debt_detail_ids=data["debt_detail_ids"],
+                applied_duration=data.get("applied_duration"),
+            )
+        except DebtCompensationError as exc:
+            return Response(
+                {"detail": exc.message, "code": exc.code, **exc.payload},
+                status=exc.http_status,
+            )
+        return Response(result)
+
+    @action(detail=False, methods=["post"], url_path="debt")
+    def debt_comp_accept(self, request):
+        """Принять заявку-оправдание: списать долг, перенести записи долга в заявку."""
+        from .services.debt_compensation import (
+            DebtCompensationError, accept_debt_compensation,
+        )
+
+        serializer = DebtCompensationAcceptSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        operator, err = self._resolve_otrabotka_operator(request, data["operator_id"])
+        if err:
+            return err
+
+        source = "requested" if request.user.role == "operator" else "manual"
+        try:
+            comp = accept_debt_compensation(
+                operator=operator,
+                code=data["code"],
+                debt_detail_ids=data["debt_detail_ids"],
+                applied_duration=data.get("applied_duration"),
+                comment=data.get("comment", ""),
+                user=request.user,
+                source=source,
+                pdf_file=data.get("pdf_file"),
+                screens=data.get("screens"),
+            )
+        except DebtCompensationError as exc:
+            return Response(
+                {"detail": exc.message, "code": exc.code, **exc.payload},
+                status=exc.http_status,
+            )
+
+        return Response(
+            CompensationDetailSerializer(comp, context={"request": request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
 
 # =============================================================================
 # Ретроактивная проверка
@@ -490,6 +726,242 @@ class TransferViewSet(viewsets.ModelViewSet):
             qs = qs.filter(operator__group_id__in=group_ids)
 
         return qs.order_by("-created_at")
+
+    def perform_create(self, serializer):
+        # ЕДИНАЯ матрица конфликтов (services.conflicts) — для generic-приёма
+        # (перенос рабочего дня и пр.): нельзя на пересекающиеся дни с
+        # конфликтующей заявкой.
+        from datetime import timedelta
+        from rest_framework.exceptions import ValidationError
+        from .services.conflicts import CONFLICTS, find_conflicts
+
+        data = serializer.validated_data
+        rule = data.get("type_rule")
+        operator = data.get("operator")
+        code = rule.code if rule else None
+        df = data.get("date_from")
+        dt = data.get("date_to") or df
+        if code in CONFLICTS and CONFLICTS[code] and operator and df:
+            days = [df + timedelta(days=i) for i in range((dt - df).days + 1)]
+            conf = find_conflicts(operator, code, days)
+            if conf:
+                raise ValidationError({"conflict": (
+                    "Конфликт с заявками: "
+                    + "; ".join(f"{c['display_name']} ({c['day']})" for c in conf[:10])
+                )})
+        serializer.save()
+
+    # ------------------------------------------------------------------ #
+    # Отпрашивание (otprashivanie) — приём заявки (Transfer = отгул,
+    # связанный Compensation(otrabotka) = отработка)
+    # ------------------------------------------------------------------ #
+
+    def _resolve_operators(self, request, operator_ids):
+        """Найти операторов с проверкой прав. Возвращает (operators, error_response)."""
+        operators = list(Operator.objects.filter(id__in=operator_ids))
+        found = {o.id for o in operators}
+        missing = [i for i in operator_ids if i not in found]
+        if missing:
+            return None, Response(
+                {"detail": f"Операторы не найдены: {missing}"},
+                status=status.HTTP_404_NOT_FOUND)
+
+        user = request.user
+        if user.role == "operator":
+            op = getattr(user, "operator", None)
+            if not op or any(o.id != op.id for o in operators):
+                return None, Response(
+                    {"detail": "Нельзя подавать заявку за другого оператора"},
+                    status=status.HTTP_403_FORBIDDEN)
+        elif user.role == "supervisor":
+            group_ids = set(user.supervised_groups.values_list("id", flat=True))
+            outside = [o.id for o in operators if o.group_id not in group_ids]
+            if outside:
+                return None, Response(
+                    {"detail": f"Операторы вне ваших групп: {outside}"},
+                    status=status.HTTP_403_FORBIDDEN)
+        return operators, None
+
+    @action(detail=False, methods=["post"], url_path="otprashivanie/preview")
+    def otprashivanie_preview(self, request):
+        """Сухой прогон: длительности, распределение, конфликты по операторам."""
+        from .services.otprashivanie import (
+            OtprashivanieError, preview_otprashivanie,
+        )
+
+        serializer = OtprashivanieAcceptSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        operators, err = self._resolve_operators(request, data["operator_ids"])
+        if err:
+            return err
+        try:
+            result = preview_otprashivanie(
+                operators=operators,
+                leave_days=data["leave_days"],
+                hour_from=data["hour_from"],
+                hour_to=data["hour_to"],
+                workoff_days=data["workoff_days"],
+            )
+        except OtprashivanieError as exc:
+            return Response(
+                {"detail": exc.message, "code": exc.code, **exc.payload},
+                status=exc.http_status)
+        return Response(result)
+
+    @action(detail=False, methods=["post"], url_path="otprashivanie")
+    def otprashivanie_accept(self, request):
+        """Принять заявку(и) отпрашивания + создать план отработки."""
+        from .services.otprashivanie import (
+            OtprashivanieError, accept_otprashivanie,
+        )
+
+        serializer = OtprashivanieAcceptSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        operators, err = self._resolve_operators(request, data["operator_ids"])
+        if err:
+            return err
+
+        source = "requested" if request.user.role == "operator" else "manual"
+        try:
+            result = accept_otprashivanie(
+                operators=operators,
+                leave_days=data["leave_days"],
+                hour_from=data["hour_from"],
+                hour_to=data["hour_to"],
+                workoff_days=data["workoff_days"],
+                comment=data.get("comment", ""),
+                user=request.user,
+                source=source,
+                pdf_file=data.get("pdf_file"),
+                screens=data.get("screens"),
+            )
+        except OtprashivanieError as exc:
+            return Response(
+                {"detail": exc.message, "code": exc.code, **exc.payload},
+                status=exc.http_status)
+        return Response(result, status=status.HTTP_201_CREATED)
+
+    # ------------------------------------------------------------------ #
+    # Учёба в рабочее время (ucheba_rabochee)
+    # ------------------------------------------------------------------ #
+
+    @action(detail=False, methods=["post"], url_path="ucheba/preview")
+    def ucheba_preview(self, request):
+        """Сухой прогон учёбы: окно, операторы + причины отбрасывания дней."""
+        from .services.ucheba import UchebaError, preview_ucheba
+
+        serializer = UchebaAcceptSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        operators, err = self._resolve_operators(request, data["operator_ids"])
+        if err:
+            return err
+        try:
+            result = preview_ucheba(
+                operators=operators, days=data["days"],
+                hour_from=data["hour_from"], hour_to=data["hour_to"])
+        except UchebaError as exc:
+            return Response({"detail": exc.message, "code": exc.code, **exc.payload},
+                            status=exc.http_status)
+        return Response(result)
+
+    @action(detail=False, methods=["post"], url_path="ucheba")
+    def ucheba_accept(self, request):
+        """Принять заявку учёбы (status=pending, проверка по факту в пайплайне)."""
+        from .services.ucheba import UchebaError, accept_ucheba
+
+        serializer = UchebaAcceptSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        operators, err = self._resolve_operators(request, data["operator_ids"])
+        if err:
+            return err
+        source = "requested" if request.user.role == "operator" else "manual"
+        try:
+            result = accept_ucheba(
+                operators=operators, days=data["days"],
+                hour_from=data["hour_from"], hour_to=data["hour_to"],
+                comment=data.get("comment", ""), user=request.user, source=source,
+                pdf_file=data.get("pdf_file"), screens=data.get("screens"))
+        except UchebaError as exc:
+            return Response({"detail": exc.message, "code": exc.code, **exc.payload},
+                            status=exc.http_status)
+        return Response(result, status=status.HTTP_201_CREATED)
+
+    # ------------------------------------------------------------------ #
+    # Льготы / освобождения (Исключение, Обучение, Льготы, Хоз.работы)
+    # ------------------------------------------------------------------ #
+
+    def _resolve_benefit_operators(self, request, data):
+        """Операторы для льготы: явный список ИЛИ вся 9ч/12ч смена (с правами)."""
+        from .services.benefit import resolve_operators
+
+        if data.get("select_all_shift"):
+            if request.user.role == "operator":
+                return None, Response(
+                    {"detail": "Оператор не может выбрать всю смену"},
+                    status=status.HTTP_403_FORBIDDEN)
+            ops = resolve_operators(None, data["select_all_shift"], data["days"])
+            if request.user.role == "supervisor":
+                gids = set(request.user.supervised_groups.values_list("id", flat=True))
+                ops = [o for o in ops if o.group_id in gids]
+            return ops, None
+        return self._resolve_operators(request, data.get("operator_ids") or [])
+
+    @action(detail=False, methods=["post"], url_path="benefit/preview")
+    def benefit_preview(self, request):
+        """Сухой прогон льготы: тип, полный день/часы, операторы + причины."""
+        from .services.benefit import BenefitError, preview_benefit
+
+        serializer = BenefitAcceptSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        operators, err = self._resolve_benefit_operators(request, data)
+        if err:
+            return err
+        try:
+            result = preview_benefit(
+                operators=operators, code=data["code"],
+                subtype=data.get("subtype"), days=data["days"],
+                hour_from=data.get("hour_from"), hour_to=data.get("hour_to"))
+        except BenefitError as exc:
+            return Response(
+                {"detail": exc.message, "code": exc.code, **exc.payload},
+                status=exc.http_status)
+        return Response(result)
+
+    @action(detail=False, methods=["post"], url_path="benefit")
+    def benefit_accept(self, request):
+        """Принять заявку-льготу (рабочий день отменяется, долг не начисляется)."""
+        from .services.benefit import BenefitError, accept_benefit
+
+        serializer = BenefitAcceptSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        operators, err = self._resolve_benefit_operators(request, data)
+        if err:
+            return err
+
+        source = "requested" if request.user.role == "operator" else "manual"
+        try:
+            result = accept_benefit(
+                operators=operators, code=data["code"],
+                subtype=data.get("subtype"), days=data["days"],
+                hour_from=data.get("hour_from"), hour_to=data.get("hour_to"),
+                comment=data.get("comment", ""), user=request.user,
+                source=source, pdf_file=data.get("pdf_file"),
+                screens=data.get("screens"))
+        except BenefitError as exc:
+            return Response(
+                {"detail": exc.message, "code": exc.code, **exc.payload},
+                status=exc.http_status)
+        return Response(result, status=status.HTTP_201_CREATED)
 
 
 # =============================================================================

@@ -41,191 +41,45 @@ SHIFTS = [
 ]
 
 
+# Все типы (кроме otrabotka) — в ОБЕИХ категориях (compensation + transfer).
+# otrabotka — только в compensation.
+_REQUEST_TYPES = [
+    # (code, display_name, group)  group: "work" | "benefit"
+    ("otrabotka",       "Отработка",                     "work"),
+    ("otprashivanie",   "Отпрашивание",                  "work"),
+    ("isklyuchenie",    "Исключение",                    "benefit"),
+    ("ne_otrabotaet",   "Не отработает",                 "benefit"),
+    # Учёба — НЕ benefit: норма не уменьшается, проверяется по факту
+    # (расширенное окно, services.ucheba), долг если норма не покрыта.
+    ("ucheba_rabochee", "Учёба в рабочее время",         "work"),
+    ("perenos_dnya",    "Перенос рабочего дня",          "work"),
+    ("obuchenie",       "Обучение",                      "benefit"),
+    ("lgota",           "Льгота",                        "benefit"),
+    ("lgota_brak",      "Льгота по бракосочетанию",      "benefit"),
+    ("lgota_rojdenie",  "Льгота по рождению ребёнка",    "benefit"),
+    ("lgota_utrata",    "Льгота по утрате родственника", "benefit"),
+    ("lgota_pereezd",   "Льгота по переезду",            "benefit"),
+    ("lgota_prochie",   "Прочие льготы",                 "benefit"),
+    ("hoz_raboty",      "Хозяйственные работы",          "benefit"),
+]
+_WORK_FLAGS = dict(
+    creates_debt_if_unmet=True, exempts_from_daily_debt=False,
+    auto_approve_on_create=False, allows_past_date=False,
+    verification_strategy="schedule_based",
+)
+_BENEFIT_FLAGS = dict(
+    creates_debt_if_unmet=False, exempts_from_daily_debt=True,
+    auto_approve_on_create=True, allows_past_date=True,
+    verification_strategy="auto_approve",
+)
+# otrabotka и ne_otrabotaet — ТОЛЬКО в compensation (из transfer исключены).
+_COMPENSATION_ONLY = {"otrabotka", "ne_otrabotaet"}
 REQUEST_TYPE_RULES = [
-    # Компенсации
-    dict(
-        category="compensation", code="compensation",
-        display_name="Отработка",
-        verification_strategy="schedule_based",
-        sort_order=10,
-    ),
-    dict(
-        category="compensation", code="nb_compensation",
-        display_name="Отработать н/б",
-        description=(
-            "NB-компенсация: оператор пропустил полный рабочий день "
-            "(9ч или 12ч недоработки) и отрабатывает в свой выходной."
-        ),
-        verification_strategy="net_based",
-        min_duration=timedelta(hours=9),
-        max_duration=timedelta(hours=12),
-        sort_order=20,
-    ),
-    dict(
-        category="compensation", code="exception",
-        display_name="Исключение",
-        verification_strategy="auto_approve",
-        auto_approve_on_create=True,
-        sort_order=30,
-    ),
-    dict(
-        category="compensation", code="partial_exception",
-        display_name="Частичное исключение",
-        verification_strategy="manual_only",
-        requires_related_debts=True,
-        sort_order=40,
-    ),
-    dict(
-        category="compensation", code="no_compensation",
-        display_name="Не отработает",
-        verification_strategy="auto_approve",
-        auto_approve_on_create=True,
-        sort_order=50,
-    ),
-    dict(
-        category="compensation", code="sl",
-        display_name="БЛ (больничный)",
-        verification_strategy="auto_approve",
-        auto_approve_on_create=True,
-        exempts_from_daily_debt=True,
-        sort_order=60,
-    ),
-    dict(
-        category="compensation", code="wc",
-        display_name="БС",
-        verification_strategy="auto_approve",
-        auto_approve_on_create=True,
-        exempts_from_daily_debt=True,
-        sort_order=70,
-    ),
-    dict(
-        category="compensation", code="study",
-        display_name="Учёба",
-        verification_strategy="auto_approve",
-        auto_approve_on_create=True,
-        exempts_from_daily_debt=True,
-        sort_order=80,
-    ),
-    dict(
-        category="compensation", code="vacation",
-        display_name="Отпуск",
-        verification_strategy="auto_approve",
-        auto_approve_on_create=True,
-        exempts_from_daily_debt=True,
-        sort_order=90,
-    ),
-    dict(
-        category="compensation", code="retroactive_compensation",
-        display_name="Ретроактивная компенсация",
-        verification_strategy="retroactive_check",
-        allows_past_date=True,
-        requires_supervisor_approval=True,
-        min_duration=timedelta(minutes=30),
-        sort_order=100,
-    ),
-    # Переносы / отгулы
-    dict(
-        category="transfer", code="transfer",
-        display_name="Перенос рабочего дня",
-        verification_strategy="schedule_based",
-        requires_date_from=True,
-        requires_date_to=True,
-        forbidden_on_day_off=True,                # ish kunini dam kunidan ko'chirish mumkin emas
-        sort_order=10,
-    ),
-    dict(
-        category="transfer", code="time_off",
-        display_name="Отпрашивание",
-        verification_strategy="hour_range_based",
-        requires_date_from=True,
-        requires_date_to=True,
-        requires_duration=True,
-        exempts_from_daily_debt=True,             # compensation verifier hisobga oladi
-        forbidden_on_day_off=True,
-        sort_order=20,
-    ),
-    dict(
-        category="transfer", code="training",
-        display_name="Обучение",
-        verification_strategy="date_range_based",
-        requires_date_from=True,
-        requires_date_to=True,
-        requires_duration=True,                   # YANGI: duration majburiy
-        exempts_from_daily_debt=True,
-        forbidden_on_day_off=True,
-        sort_order=30,
-    ),
-    dict(
-        category="transfer", code="vacation",
-        display_name="Отпуск",
-        verification_strategy="date_range_based",
-        requires_date_from=True,
-        requires_date_to=True,
-        exempts_from_daily_debt=True,
-        # vacation, sl, wc, study — dam kuniga RUXSAT
-        sort_order=40,
-    ),
-    dict(
-        category="transfer", code="sl",
-        display_name="БЛ",
-        verification_strategy="date_range_based",
-        requires_date_from=True,
-        requires_date_to=True,
-        exempts_from_daily_debt=True,
-        sort_order=50,
-    ),
-    dict(
-        category="transfer", code="wc",
-        display_name="БС",
-        verification_strategy="date_range_based",
-        requires_date_from=True,
-        requires_date_to=True,
-        exempts_from_daily_debt=True,
-        sort_order=60,
-    ),
-    dict(
-        category="transfer", code="study",
-        display_name="Учёба",
-        verification_strategy="date_range_based",
-        requires_date_from=True,
-        requires_date_to=True,
-        exempts_from_daily_debt=True,
-        sort_order=70,
-    ),
-    dict(
-        category="transfer", code="office_work",
-        display_name="Хозяйственные работы",
-        verification_strategy="date_range_based",
-        requires_date_from=True,
-        requires_date_to=True,
-        requires_duration=True,                   # YANGI
-        exempts_from_daily_debt=True,
-        forbidden_on_day_off=True,
-        sort_order=80,
-    ),
-    dict(
-        category="transfer", code="benefits",
-        display_name="Льгота",
-        verification_strategy="date_range_based",
-        requires_date_from=True,
-        requires_date_to=True,
-        requires_duration=True,                   # YANGI
-        exempts_from_daily_debt=True,
-        forbidden_on_day_off=True,
-        sort_order=90,
-    ),
-    dict(
-        category="transfer", code="exception",
-        display_name="Исключение",
-        verification_strategy="auto_approve",
-        auto_approve_on_create=True,
-        requires_date_from=True,
-        requires_date_to=True,
-        requires_duration=True,                   # YANGI
-        exempts_from_daily_debt=True,             # YANGI
-        forbidden_on_day_off=True,
-        sort_order=100,
-    ),
+    dict(category=cat, code=code, display_name=name, sort_order=idx * 10,
+         **(_WORK_FLAGS if grp == "work" else _BENEFIT_FLAGS))
+    for cat in ("compensation", "transfer")
+    for idx, (code, name, grp) in enumerate(_REQUEST_TYPES, start=1)
+    if not (cat == "transfer" and code in _COMPENSATION_ONLY)
 ]
 
 
@@ -329,8 +183,11 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(f"Правила заявок: {len(REQUEST_TYPE_RULES)}"))
 
         self.stdout.write("Создание системных политик...")
+        # СОЗДАЁМ только отсутствующие политики (get_or_create), НЕ перезаписываем
+        # существующие: значения, настроенные на проде (api_url, allowed_groups,
+        # google_credential_path и т.п.), сохраняются при каждом запуске seed.
         for policy_data in SYSTEM_POLICIES:
-            SystemPolicy.objects.update_or_create(
+            SystemPolicy.objects.get_or_create(
                 key=policy_data["key"],
                 defaults={
                     "value": policy_data["value"],

@@ -9,7 +9,6 @@ from .services import (
     debt_calculator,
     compensation_verifier,
     log_loader,
-    night_pipeline,
     operator_sync,
     sheets_sync,
     transfer_verifier,
@@ -49,101 +48,38 @@ def sync_schedules_task(year: int = None, month: int = None):
 # =============================================================================
 
 @shared_task(name="hourly_locks.daily_pipeline")
-def daily_pipeline_task(target_date_iso: str = None):
+def daily_pipeline_task(target_date_iso: str = None, skip_sheets: bool = False):
+    """ЕДИНЫЙ ежедневный конвейер.
 
+    Делегирует в daily_runner.run() — ЕДИНЫЙ источник истины (тот же код, что и
+    при ручном запуске `python daily_runner.py`). Никаких расхождений.
+    Ленивый импорт: daily_runner делает django.setup() на уровне модуля, поэтому
+    импортируем внутри задачи (django уже инициализирован в воркере).
+    """
     if target_date_iso:
         target_date = date.fromisoformat(target_date_iso)
     else:
         target_date = localdate() - timedelta(days=1)
 
     logger.info("[daily_pipeline] Старт за %s", target_date)
-
-    # 1. Проверка API
-    integrity = check_api_integrity(target_date)
-    if not integrity["ok"]:
-        logger.error(
-            "[daily_pipeline] API не готов: ошибки в %s часах",
-            integrity["error_count"],
-        )
-        log_event(
-            event_type="api_error",
-            level="error",
-            message="API недоступен для " + str(target_date),
-            payload=integrity,
-        )
-        return {"status": "skipped", "reason": "api_not_ready", "integrity": integrity}
-
-    # 2. Авто-создание новых операторов из API
-    op_sync_stats = operator_sync.sync_operators_from_api(target_date)
-
-    # 3. Обновление статусов Transfer
-    transfer_verifier.update_transfer_statuses(today=localdate())
-
-    # 4. Загрузка логов
-    log_stats = log_loader.load_logs_for_day(target_date)
-
-    # 5. Расчёт долгов
-    debt_stats = debt_calculator.calculate_work_debts(target_date)
-
-    # 6. Проверка компенсаций
-    comp_stats = compensation_verifier.verify_compensations(target_date)
-
-    # 7. Проверка переносов
-    tr_stats = transfer_verifier.verify_transfers_for_date(target_date)
-
-    # 8. Обработка отгулов
-    off_stats = transfer_verifier.apply_time_off_extended_window(target_date)
-
-    result = {
-        "target_date": str(target_date),
-        "operator_sync": op_sync_stats,
-        "logs": log_stats,
-        "debts": debt_stats,
-        "compensations": comp_stats,
-        "transfers": tr_stats,
-        "time_offs": off_stats,
-    }
-
-    # Pipeline oxirida — final recompute (safety net)
-    from .services.work_debt import recompute_for_date
-    result["work_debt_recompute"] = recompute_for_date(target_date)
-
-    # WFM ga natijani push qilish (Oqim C, incremental)
-    try:
-        result["wfm_push"] = push_cycle_to_wfm()
-    except Exception as exc:
-        logger.exception("[daily_pipeline] WFM push xatosi: %s", exc)
-        result["wfm_push"] = {"error": str(exc)}
-
+    from daily_runner import run as run_daily
+    result = run_daily(target_date, skip_sheets=skip_sheets)
     logger.info("[daily_pipeline] Завершено: %s", result)
     return result
 
 
 # =============================================================================
-# Ночной конвейер 20-08
+# Авто-проверка заявок отработки
 # =============================================================================
 
-@shared_task(name="hourly_locks.night_pipeline")
-def night_pipeline_task(target_date_iso: str = None):
-    """Ночной конвейер для 20-08 + компенсация."""
-    if target_date_iso:
-        target_date = date.fromisoformat(target_date_iso)
-    else:
-        target_date = localdate() - timedelta(days=1)
+@shared_task(name="hourly_locks.verify_otrabotka")
+def verify_otrabotka_task(target_date_iso: str = None):
+    """Проверить заявки отработки, у которых все дни прошли."""
+    from .services.otrabotka_verify import verify_due_otrabotka
 
-    logger.info("[night_pipeline_task] Старт за %s", target_date)
-    result = night_pipeline.run_night_pipeline(target_date)
-
-    # WFM ga natijani push qilish (Oqim C)
-    try:
-        if isinstance(result, dict):
-            result["wfm_push"] = push_cycle_to_wfm()
-        else:
-            push_cycle_to_wfm()
-    except Exception as exc:
-        logger.exception("[night_pipeline_task] WFM push xatosi: %s", exc)
-
-    logger.info("[night_pipeline_task] Завершено: %s", result)
+    target_date = date.fromisoformat(target_date_iso) if target_date_iso else None
+    result = verify_due_otrabotka(target_date)
+    logger.info("[verify_otrabotka_task] Результат: %s", result)
     return result
 
 
@@ -154,11 +90,12 @@ def night_pipeline_task(target_date_iso: str = None):
 @shared_task(name="hourly_locks.auto_close_cycle")
 def auto_close_cycle_task():
     """
-    Запускается каждое 19-е число месяца (beat: monthly-close).
-    Закрывает предыдущий цикл и открывает новый, затем пушит в WFM.
+    Ручной/резервный запуск ролловера цикла (штатно его делает дневной конвейер,
+    шаг 12). Самовосстанавливается: закрывает ВСЕ истёкшие циклы и открывает
+    актуальный, затем пушит в WFM. Безопасно вызывать в любой день.
     """
     logger.info("[auto_close_cycle_task] Старт")
-    result = cycle_service.auto_close_if_due()
+    result = cycle_service.ensure_active_cycle()
 
     # WFM ga push (yangi aktiv cikl + master data; cikl statuslari yangilanadi)
     try:

@@ -124,9 +124,11 @@ def _archive_all_transfers(cycle: Cycle) -> int:
     """Архивирует все Transfer'ы, относящиеся к циклу."""
     from archive.models import ArchiveTransfer
 
-    qs = Transfer.objects.filter(cycle=cycle).select_related(
-        "operator", "operator__group", "type_rule",
-    )
+    # pending/in_progress перенесены на новый цикл (_repoint_cross_cycle_requests)
+    # и здесь НЕ архивируются — защита на случай, если что-то осталось с cycle=cycle.
+    qs = Transfer.objects.filter(cycle=cycle).exclude(
+        status__in=["pending", "in_progress"],
+    ).select_related("operator", "operator__group", "type_rule")
 
     rows = []
     for transfer in qs:

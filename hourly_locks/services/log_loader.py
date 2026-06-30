@@ -10,9 +10,11 @@ from django.db import transaction
 
 from hourly_locks.models import (
     Compensation,
+    CompensationDay,
     Operator,
     OperatorScheduleDay,
     Shift,
+    UchebaDay,
     WorkLogDaily,
 )
 
@@ -139,30 +141,51 @@ def _load_single_operator(
 
     shift_obj = schedule_day.shift
 
-    # 20-08 с компенсацией — обрабатывается ночным конвейером
+    # 20-08 со СТАРОЙ компенсацией (verification_strategy=night_pipeline) —
+    # обрабатывается ночным конвейером. Отработка (schedule_based) НЕ
+    # пропускается: ей нужен WorkLogDaily с 24ч-плиткой (см. ниже).
     if shift_obj.requires_special_pipeline:
-        has_comp = Compensation.objects.filter(
+        has_night_comp = Compensation.objects.filter(
             operator=operator,
             planned_date=target_date,
             status__in=["pending", "approved", "partial"],
+            type_rule__verification_strategy="night_pipeline",
         ).exists()
 
-        if has_comp:
+        if has_night_comp:
             logger.info(
                 "[log_loader] SKIP %s — 20-08 с компенсацией обрабатывается ночным конвейером",
                 operator,
             )
             return "skipped_20_08_with_comp"
 
-    # Определяем окно часов
-    has_pending_comp = Compensation.objects.filter(
-        operator=operator,
-        planned_date=target_date,
-        status="pending",
+    # Определяем окно часов. Широкое (24ч-плитка) окно нужно, если на этот день
+    # есть отработка — по planned_date (старые компенсации) ИЛИ по дню отработки
+    # (CompensationDay, каждый день многодневной/последовательной отработки).
+    has_pending_comp = (
+        Compensation.objects.filter(
+            operator=operator, planned_date=target_date, status="pending",
+        ).exists()
+        or CompensationDay.objects.filter(
+            compensation__operator=operator, day=target_date,
+            compensation__type_rule__code="otrabotka",
+            compensation__status__in=["pending", "partial"],
+        ).exists()
+    )
+
+    # Учёба в рабочее время: РАСШИРЕННОЕ окно (от начала смены до 08:00 след.
+    # дня), чтобы захватить доработку после возвращения с учёбы. Часы с full=0
+    # (окно учёбы и хвост) в сумму не войдут.
+    has_ucheba = UchebaDay.objects.filter(
+        transfer__operator=operator, day=target_date,
+        transfer__type_rule__code="ucheba_rabochee",
+        transfer__status__in=["pending", "approved", "partial"],
     ).exists()
 
-    if has_pending_comp:
-        SPECIAL_CODES = {"17-02", "18-03", "15-24"}
+    if has_ucheba:
+        start_h, end_h, crosses = shift_obj.start_time.hour, 7, True
+    elif has_pending_comp:
+        SPECIAL_CODES = {"17-02", "18-03", "15-24", "20-08"}
         if shift_obj.code in SPECIAL_CODES:
             start_h, end_h, crosses = shift_service.get_fetch_window_for_special(
                 shift_obj.code,

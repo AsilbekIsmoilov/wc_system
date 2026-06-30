@@ -9,7 +9,8 @@
   - get_or_create_active()   — создаёт цикл, если его нет
   - calculate_bounds(ref)    — границы цикла для произвольной даты
   - close_cycle(cycle, user) — закрытие цикла (запуск архивации)
-  - auto_close_if_due(today) — авто-закрытие 20-го числа
+  - auto_close_if_due(today) — закрытие истёкшего цикла (end_date < today)
+  - ensure_active_cycle(today) — самовосстановление: закрыть истёкшие + открыть текущий
 """
 
 from __future__ import annotations
@@ -195,30 +196,59 @@ def close_cycle(cycle: Cycle, user=None) -> dict:
 
 def auto_close_if_due(today: Optional[date] = None) -> Optional[dict]:
     """
-    Авто-закрытие, если сегодня 20-е число и предыдущий цикл активен.
-    Вызывается через Celery beat.
+    Авто-закрытие активного цикла, если он УЖЕ истёк (end_date < today).
+
+    НЕ привязано к конкретному числу месяца — самовосстанавливается, даже если
+    запуск ровно 20-го был пропущен (система была недоступна). Закрывает ОДИН
+    (самый ранний истёкший) цикл за вызов; для многомесячных простоев см.
+    ensure_active_cycle(), который повторяет до актуального.
+
+    Цикл закрывается ТОЛЬКО когда end_date < today, т.е. последний день цикла
+    (end_date) уже наступил в прошлом и обработан дневным конвейером.
     """
     if today is None:
         today = date.today()
 
-    if today.day != 20:
-        logger.debug("Сегодня не 20-е число (%s), пропуск", today)
-        return None
-
-    # Ищем активный цикл, который должен был закрыться вчера
-    yesterday = today - timedelta(days=1)
-    cycle_to_close = Cycle.objects.filter(
-        status="active",
-        end_date=yesterday,
-    ).first()
-
+    cycle_to_close = (
+        Cycle.objects.filter(status="active", end_date__lt=today)
+        .order_by("end_date")
+        .first()
+    )
     if not cycle_to_close:
-        logger.warning(
-            "Не найден активный цикл с end_date=%s. "
-            "Возможно, цикл уже закрыт или не открыт.",
-            yesterday,
-        )
         return None
 
-    logger.info("Авто-закрытие цикла: %s", cycle_to_close)
+    logger.info(
+        "Авто-закрытие истёкшего цикла %s (end_date=%s < today=%s)",
+        cycle_to_close, cycle_to_close.end_date, today,
+    )
     return close_cycle(cycle_to_close, user=None)
+
+
+def ensure_active_cycle(today: Optional[date] = None) -> dict:
+    """
+    Гарантирует, что активный цикл соответствует today:
+      1) закрывает ВСЕ истёкшие активные циклы по очереди (на случай, если
+         запуск пропускался несколько месяцев — каждое закрытие открывает
+         следующий цикл, который тоже может оказаться истёкшим);
+      2) если активного цикла нет — открывает текущий.
+
+    Идемпотентно и безопасно для ЕЖЕДНЕВНОГО вызова: в обычный день активный
+    цикл содержит today → ничего не закрывается. Закрытие (с архивацией)
+    происходит ровно один раз — на 20-е число, ПОСЛЕ обработки последнего дня.
+    """
+    if today is None:
+        today = date.today()
+
+    closed = 0
+    for _ in range(36):  # предохранитель от бесконечного цикла
+        if auto_close_if_due(today) is None:
+            break
+        closed += 1
+
+    cycle = get_or_create_active_cycle(today=today)
+    return {
+        "active_cycle_id": cycle.id,
+        "active_start": str(cycle.start_date),
+        "active_end": str(cycle.end_date),
+        "closed_count": closed,
+    }

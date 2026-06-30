@@ -32,7 +32,6 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'hourly_locks',
     'archive',
-    'bonus_api',
     'attendance',
     'rest_framework',
     "django_filters",
@@ -62,8 +61,11 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        'rest_framework.authentication.SessionAuthentication',
+        # JWT первым: при наличии Bearer-токена он выигрывает и проверка CSRF
+        # не выполняется. SessionAuthentication (browsable API / admin) —
+        # вторым: срабатывает только когда Bearer-токена нет.
         "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": None,
@@ -258,6 +260,13 @@ CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'Asia/Tashkent'
 
+
+# Путь к service-account ключу Google (creds.json).
+# В Docker монтируется в /app/creds.json; по умолчанию берём из BASE_DIR.
+GOOGLE_CREDENTIAL_PATH = os.environ.get(
+    "GOOGLE_CREDENTIAL_PATH",
+    str(BASE_DIR / "creds.json"),
+)
 
 WFM_BASE_URL = os.environ.get("WFM_BASE_URL", "http://localhost:3000/api/v1")
 

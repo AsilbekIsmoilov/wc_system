@@ -103,12 +103,6 @@ class Operator(models.Model):
         null=True,
         db_index=True,
     )
-    photo = models.ImageField(
-        verbose_name="Фото",
-        upload_to="operators/photos/",
-        blank=True,
-        null=True,
-    )
     group = models.ForeignKey(
         "hourly_locks.Group",
         verbose_name="Группа",
@@ -780,6 +774,10 @@ class WorkDebtDetail(models.Model):
         ("time_off", "Отпрашивание"),
         ("compensation_shortfall", "Недоработанная компенсация"),
         ("nb_compensation_shortfall", "Недоработанная NB-компенсация"),
+        ("otrabotka_partial", "Остаток частичной отработки"),
+        ("otrabotka_violation", "Нарушение при отработке (норма/перерыв/перебор)"),
+        ("compensation_remainder", "Остаток после частичного списания компенсацией"),
+        ("ucheba", "Недоработка в день учёбы в рабочее время"),
         ("manual", "Вручную добавлен"),
     ]
 
@@ -1289,6 +1287,100 @@ class CompensationDebtLink(models.Model):
         return f"Comp#{self.compensation_id} ↔ Debt#{self.debt_detail_id} [{state}]"
 
 
+class CompensationDay(models.Model):
+    """
+    Один день отработки в рамках заявки Compensation (тип «otrabotka»).
+
+    Заявка отработки может охватывать несколько дней; общая
+    requested_duration делится по дням (поле allocated_duration).
+    Каждый день проверяется отдельно (Фаза 2: расчёт по факту из API),
+    результат пишется в status/credited_duration/fact_*.
+    """
+    STATUS_CHOICES = [
+        ("pending", "В ожидании"),
+        ("approved", "Подтверждено"),
+        ("partial", "Частично"),
+        ("declined", "Отклонено"),
+    ]
+
+    compensation = models.ForeignKey(
+        "Compensation",
+        verbose_name="Заявка",
+        on_delete=models.CASCADE,
+        related_name="days",
+    )
+    day = models.DateField(
+        verbose_name="День отработки",
+        db_index=True,
+    )
+    allocated_duration = models.DurationField(
+        verbose_name="Норма отработки на день",
+        help_text="Доля requested_duration, распределённая на этот день",
+    )
+
+    status = models.CharField(
+        verbose_name="Статус дня",
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default="pending",
+        db_index=True,
+    )
+    credited_duration = models.DurationField(
+        verbose_name="Засчитано за день",
+        null=True,
+        blank=True,
+        help_text="Фактически засчитанное время после проверки (Фаза 2)",
+    )
+
+    fact_full = models.DurationField(
+        verbose_name="Факт (работа)",
+        null=True,
+        blank=True,
+    )
+    fact_lock = models.DurationField(
+        verbose_name="Факт (перерыв)",
+        null=True,
+        blank=True,
+    )
+
+    verified_at = models.DateTimeField(
+        verbose_name="Проверено",
+        null=True,
+        blank=True,
+    )
+    note = models.TextField(
+        verbose_name="Примечание",
+        blank=True,
+        null=True,
+    )
+
+    created_at = models.DateTimeField(
+        verbose_name="Создан",
+        auto_now_add=True,
+    )
+    updated_at = models.DateTimeField(
+        verbose_name="Обновлён",
+        auto_now=True,
+    )
+
+    class Meta:
+        verbose_name = "День отработки"
+        verbose_name_plural = "Дни отработки"
+        unique_together = ("compensation", "day")
+        ordering = ["day"]
+        indexes = [
+            models.Index(fields=["day"]),
+            models.Index(fields=["status"]),
+            models.Index(fields=["compensation", "day"]),
+        ]
+
+    def __str__(self):
+        return (
+            f"Comp#{self.compensation_id} — {self.day} "
+            f"[{self.allocated_duration}] {self.get_status_display()}"
+        )
+
+
 class Transfer(BaseWorkRequest):
     """
     Перенос смены / отгул / больничный / отпуск / учёба и т.п.
@@ -1339,6 +1431,43 @@ class Transfer(BaseWorkRequest):
         verbose_name="Остаток долга",
         null=True,
         blank=True,
+    )
+
+    # Для isklyuchenie/obuchenie: как длительность распределяется при расчёте
+    # отработки — часть уменьшает рабочую норму (wh), часть увеличивает
+    # допустимый перерыв (lock). Функция отработки учитывает оба и суммирует.
+    wh_part = models.DurationField(
+        verbose_name="Доля в рабочие часы (wh)",
+        null=True,
+        blank=True,
+        help_text="isklyuchenie/obuchenie: сколько уменьшает рабочую норму",
+    )
+    lock_part = models.DurationField(
+        verbose_name="Доля в перерыв (lock)",
+        null=True,
+        blank=True,
+        help_text="isklyuchenie/obuchenie: сколько добавляется к допустимому перерыву",
+    )
+
+    # Подтип заявки (напр. для «Прочие льготы»: otgul / korotkiy_den).
+    subtype = models.CharField(
+        verbose_name="Подтип",
+        max_length=30,
+        null=True,
+        blank=True,
+        help_text="Напр. для «Прочие льготы»: otgul (отгул) / korotkiy_den (короткий день)",
+    )
+
+    # Только для otprashivanie: связанный план отработки (Compensation типа
+    # otrabotka), которым оператор отрабатывает отпрошенные часы. Долги
+    # (WDD source=time_off) за дни отпрашивания привязываются к этому плану.
+    repayment_compensation = models.OneToOneField(
+        "Compensation",
+        verbose_name="План отработки (для отпрашивания)",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="otprashivanie_source",
     )
 
     class Meta:
@@ -1418,6 +1547,133 @@ class Transfer(BaseWorkRequest):
             f"Заявка[{type_code}] {self.operator} "
             f"{self.date_from}→{self.date_to} [{self.get_status_display()}]"
         )
+
+
+class BenefitDay(models.Model):
+    """
+    Один день в рамках заявки-льготы (Transfer benefit-типы: Исключение,
+    Обучение, Льготы, Хоз.работы). ОДНА заявка может покрывать несколько
+    (в т.ч. непоследовательных) дней; по каждому дню — своё освобождение.
+
+    duration=NULL → весь день освобождён (норма wh не учитывается).
+    duration>0 → частичное (норма уменьшается на duration; окно hour_from–hour_to).
+    debt_calculator списывает долг по этим записям (а не по диапазону дат),
+    поэтому пропуски между днями НЕ освобождаются.
+    """
+    transfer = models.ForeignKey(
+        "Transfer",
+        verbose_name="Заявка-льгота",
+        on_delete=models.CASCADE,
+        related_name="benefit_days",
+    )
+    day = models.DateField(verbose_name="День", db_index=True)
+    hour_from = models.TimeField(verbose_name="С (время)", null=True, blank=True)
+    hour_to = models.TimeField(verbose_name="По (время)", null=True, blank=True)
+    duration = models.DurationField(
+        verbose_name="Длительность за день",
+        null=True, blank=True,
+        help_text="NULL = весь день; иначе уменьшение нормы на эту длительность",
+    )
+
+    created_at = models.DateTimeField(verbose_name="Создан", auto_now_add=True)
+    updated_at = models.DateTimeField(verbose_name="Обновлён", auto_now=True)
+
+    class Meta:
+        verbose_name = "День льготы"
+        verbose_name_plural = "Дни льготы"
+        unique_together = ("transfer", "day")
+        ordering = ["day"]
+        indexes = [models.Index(fields=["day"])]
+
+    def __str__(self):
+        d = "весь день" if self.duration is None else str(self.duration)
+        return f"Tr#{self.transfer_id} — {self.day} [{d}]"
+
+
+class UchebaDay(models.Model):
+    """
+    Один день «учёбы в рабочее время» (Transfer, тип «ucheba_rabochee»).
+
+    Учёба — окно в середине рабочего дня (напр. 12:00–18:00): оператор уходит
+    учиться и ВОЗВРАЩАЕТСЯ доработать. Норма дня НЕ уменьшается — оператор
+    обязан покрыть полную дневную норму, работая до/после учёбы (в т.ч. поздно,
+    в следующие сутки). Окно ухода определяется по ФАКТУ из API (часы с
+    full=0). Проверка по факту в расширенном окне (до остановки работы).
+    Долг (WorkDebtDetail source="ucheba") создаётся, если норма не покрыта.
+    Отработка может идти параллельно (доработка сверх нормы — отдельно).
+    """
+    STATUS_CHOICES = [
+        ("pending", "В ожидании"),
+        ("approved", "Подтверждено"),
+        ("partial", "Частично"),
+        ("declined", "Отклонено"),
+    ]
+    transfer = models.ForeignKey(
+        "Transfer", verbose_name="Заявка учёбы",
+        on_delete=models.CASCADE, related_name="ucheba_days",
+    )
+    day = models.DateField(verbose_name="День", db_index=True)
+    hour_from = models.TimeField(verbose_name="С (план)", null=True, blank=True)
+    hour_to = models.TimeField(verbose_name="По (план)", null=True, blank=True)
+    duration = models.DurationField(
+        verbose_name="Длительность учёбы (план)", null=True, blank=True)
+
+    fact_full = models.DurationField(verbose_name="Факт (полный)", null=True, blank=True)
+    fact_lock = models.DurationField(verbose_name="Факт (перерыв)", null=True, blank=True)
+    debt = models.DurationField(verbose_name="Долг дня", null=True, blank=True)
+    status = models.CharField(
+        verbose_name="Статус", max_length=20,
+        choices=STATUS_CHOICES, default="pending", db_index=True)
+    verified_at = models.DateTimeField(verbose_name="Проверено", null=True, blank=True)
+    note = models.TextField(verbose_name="Примечание", null=True, blank=True)
+
+    created_at = models.DateTimeField(verbose_name="Создан", auto_now_add=True)
+    updated_at = models.DateTimeField(verbose_name="Обновлён", auto_now=True)
+
+    class Meta:
+        verbose_name = "День учёбы"
+        verbose_name_plural = "Дни учёбы"
+        unique_together = ("transfer", "day")
+        ordering = ["day"]
+        indexes = [models.Index(fields=["day"]), models.Index(fields=["status"])]
+
+    def __str__(self):
+        return f"Tr#{self.transfer_id} — {self.day} [учёба {self.duration}]"
+
+
+class OtprashivanieDay(models.Model):
+    """
+    Один день отпрашивания в рамках заявки Transfer (тип «otprashivanie»).
+
+    Заявка может охватывать несколько дней; на каждый день — своё окно времени
+    (hour_from–hour_to) и длительность (отпрошенные часы за этот день).
+    За каждый такой день в дневном пайплайне создаётся долг
+    (WorkDebtDetail source="time_off"), привязанный к плану отработки
+    (Transfer.repayment_compensation).
+    """
+    transfer = models.ForeignKey(
+        "Transfer",
+        verbose_name="Заявка отпрашивания",
+        on_delete=models.CASCADE,
+        related_name="otprashivanie_days",
+    )
+    day = models.DateField(verbose_name="День отпрашивания", db_index=True)
+    hour_from = models.TimeField(verbose_name="С (время)")
+    hour_to = models.TimeField(verbose_name="По (время)")
+    duration = models.DurationField(verbose_name="Длительность за день")
+
+    created_at = models.DateTimeField(verbose_name="Создан", auto_now_add=True)
+    updated_at = models.DateTimeField(verbose_name="Обновлён", auto_now=True)
+
+    class Meta:
+        verbose_name = "День отпрашивания"
+        verbose_name_plural = "Дни отпрашивания"
+        unique_together = ("transfer", "day")
+        ordering = ["day"]
+        indexes = [models.Index(fields=["day"])]
+
+    def __str__(self):
+        return f"Tr#{self.transfer_id} — {self.day} [{self.duration}]"
 
 
 # =============================================================================
