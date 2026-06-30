@@ -32,6 +32,9 @@ variables:
     - docker compose down
     - docker compose up -d
     - docker image prune -f
+    # ВРЕМЕННАЯ диагностика 500 на логине — воспроизводим вход + дамп логов web
+    - docker compose exec -T web python scripts/diag_login.py || true
+    - docker compose logs --tail=150 web || true
 
 # ---------- PROD ----------
 build-prod:
