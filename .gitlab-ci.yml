@@ -30,21 +30,7 @@ variables:
       - stuck_or_timeout_failure
   script:
     - docker compose down
-    # 1. Поднять БД и дождаться готовности (--wait по healthcheck).
-    - docker compose up -d --wait db
-    # 2. Гарантировать существование БД (на случай DROP DATABASE / пустого тома).
-    - docker compose exec -T db sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS wc_system_default CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE DATABASE IF NOT EXISTS wc_system_archive CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"'
-    # 3. Поднять остальные сервисы.
-    - docker compose up -d --wait
-    # 4. Миграции + seed ЯВНО из CI (не зависит от RUN_MIGRATIONS в контейнере).
-    - docker compose exec -T web python manage.py migrate --noinput
-    # seed (типы/смены/политики/активный цикл) — критично для работы приложения,
-    # делаем ДО archive, чтобы он отработал даже при проблемах с архивом.
-    - docker compose exec -T web python manage.py seed_initial_data
-    # archive: таблицы могли существовать без записи в истории миграций
-    # (прерванная миграция; на MySQL DDL не транзакционна). При конфликте
-    # "table already exists" — помечаем миграции как применённые (--fake).
-    - docker compose exec -T web python manage.py migrate --database=archive --noinput || docker compose exec -T web python manage.py migrate --database=archive --fake --noinput
+    - docker compose up -d
     - docker image prune -f
 
 # ---------- PROD ----------
