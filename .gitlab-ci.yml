@@ -32,9 +32,6 @@ variables:
     - docker compose down
     - docker compose up -d
     - docker image prune -f
-    # ВРЕМЕННАЯ диагностика 500 на логине — воспроизводим вход + дамп логов web
-    - docker compose exec -T web python scripts/diag_login.py || true
-    - docker compose logs --tail=150 web || true
 
 # ---------- PROD ----------
 build-prod:
@@ -42,6 +39,20 @@ build-prod:
   tags: [wfm_prod]
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
+
+# ВРЕМЕННО: грепаем логи ТЕКУЩЕГО (ещё работающего) web ДО того как deploy его
+# пересоздаст (down). Здесь будет traceback реального 500 из браузера.
+logs-prod:
+  stage: build
+  image: docker:25
+  tags: [wfm_prod]
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  script:
+    - echo "================ TRACEBACK (most recent call last) ================"
+    - docker compose logs web 2>&1 | grep -A 35 "Traceback (most recent call last)" | tail -200 || true
+    - echo "================ Internal Server Error / Exception in ASGI ================"
+    - docker compose logs web 2>&1 | grep -B2 -A 35 -iE "Internal Server Error|Exception in ASGI" | tail -200 || true
 
 deploy-prod:
   extends: .deploy_template
