@@ -46,11 +46,6 @@ variables:
     # "table already exists" — помечаем миграции как применённые (--fake).
     - docker compose exec -T web python manage.py migrate --database=archive --noinput || docker compose exec -T web python manage.py migrate --database=archive --fake --noinput
     - docker image prune -f
-    # ВРЕМЕННАЯ диагностика 500 на /api/v1/ — прямой запрос к uvicorn + тело ответа
-    - docker compose exec -T web python manage.py shell -c "from django.conf import settings; print('SETTINGS DEBUG =', settings.DEBUG, '| ALLOWED_HOSTS =', settings.ALLOWED_HOSTS)" || true
-    - docker compose exec -T web python scripts/diag500.py || true
-    - docker compose exec -T web python scripts/diag_login.py || true
-    - docker compose logs --tail=80 web || true
 
 # ---------- PROD ----------
 build-prod:
