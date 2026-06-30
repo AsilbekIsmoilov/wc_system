@@ -250,6 +250,18 @@ LOGGING = {
             "level": "INFO",
             "propagate": False,
         },
+
+        # 5xx-ошибки (необработанные исключения вьюх) — в stdout, чтобы traceback
+        # был виден в `docker compose logs web` (и в CI job-логе) даже при DEBUG=0.
+        "django.request": {
+            "handlers": ["console"],
+            "level": "ERROR",
+            "propagate": False,
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": "WARNING",
     },
 }
 
