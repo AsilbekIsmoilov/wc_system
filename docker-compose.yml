@@ -45,6 +45,7 @@ services:
     environment:
       <<: *app-env
       RUN_MIGRATIONS: "1"
+      DEBUG: "1"   # ВРЕМЕННО для диагностики 500 — ВЕРНУТЬ в "0" после!
     volumes:
       - ./creds.json:/app/creds.json:ro
       - static_volume:/app/staticfiles
