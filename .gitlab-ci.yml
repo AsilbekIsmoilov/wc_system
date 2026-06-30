@@ -53,6 +53,7 @@ reset-db-prod:
   stage: deploy
   image: docker:25
   tags: [wfm_prod]
+  needs: []          # независимо от build-prod — кнопка доступна всегда
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
       when: manual
