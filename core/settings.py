@@ -79,6 +79,8 @@ SPECTACULAR_SETTINGS = {
 }
 
 MIDDLEWARE = [
+    # Первым — чтобы поймать и залогировать любой необработанный traceback (500).
+    "core.middleware.ExceptionLoggingMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -238,6 +240,15 @@ LOGGING = {
             "formatter": "verbose",
             "encoding": "utf-8",
         },
+
+        # Полные traceback'и 5xx — в отдельный файл logs/errors.log.
+        "file_errors": {
+            "level": "ERROR",
+            "class": "logging.FileHandler",
+            "filename": LOG_DIR / "errors.log",
+            "formatter": "verbose",
+            "encoding": "utf-8",
+        },
     },
 
     "loggers": {
@@ -252,10 +263,18 @@ LOGGING = {
             "propagate": False,
         },
 
-        # 5xx-ошибки (необработанные исключения вьюх) — в stdout, чтобы traceback
-        # был виден в `docker compose logs web` (и в CI job-логе) даже при DEBUG=0.
+        # 5xx-ошибки (необработанные исключения вьюх) — в stdout И в файл,
+        # чтобы traceback был виден в `docker compose logs web` и в
+        # logs/errors.log даже при DEBUG=0.
         "django.request": {
-            "handlers": ["console"],
+            "handlers": ["console", "file_errors"],
+            "level": "ERROR",
+            "propagate": False,
+        },
+
+        # Наш middleware ExceptionLoggingMiddleware.
+        "app.errors": {
+            "handlers": ["console", "file_errors"],
             "level": "ERROR",
             "propagate": False,
         },

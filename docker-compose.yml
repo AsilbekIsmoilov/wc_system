@@ -45,9 +45,6 @@ services:
     environment:
       <<: *app-env
       RUN_MIGRATIONS: "1"
-      # ВРЕМЕННО для диагностики 500: показывает traceback прямо в браузере.
-      # УБРАТЬ после того, как поймаем причину.
-      DEBUG: "1"
     volumes:
       - ./creds.json:/app/creds.json:ro
       - static_volume:/app/staticfiles

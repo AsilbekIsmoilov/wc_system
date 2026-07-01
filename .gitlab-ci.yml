@@ -49,26 +49,3 @@ deploy-prod:
   tags: [wfm_prod]
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
-
-# Диагностика: к какой БД реально подключено приложение + тест логина на этой БД.
-# Запускается вручную (кнопка ▶) на pipeline ветки main.
-diag-prod:
-  stage: deploy
-  image: docker:25
-  tags: [wfm_prod]
-  needs: []
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      when: manual
-  allow_failure: true
-  script:
-    # Действует даже на СТАРОМ контейнере (не зависит от новых скриптов в образе).
-    # Каждый шаг с `|| echo`, чтобы логи гарантированно дошли до конца.
-    - echo "=== DEBUG и к чему подключено приложение ==="
-    - docker compose exec -T web python manage.py shell -c "from django.conf import settings as s; from django.db import connections as c; print('DEBUG =', s.DEBUG); print('DEFAULT =', c['default'].settings_dict['NAME'], '| ARCHIVE =', c['archive'].settings_dict['NAME'])" || echo "(не удалось получить DEBUG)"
-    - echo "=== попытка воспроизвести форму-логин (если скрипт есть в образе) ==="
-    - docker compose exec -T web python scripts/diag_login_form.py || echo "(скрипт недоступен в этом образе — полагаемся на воспроизведение 500 в браузере)"
-    - echo "=== ЛОГИ WEB (тут traceback 500; воспроизведите 500 в браузере ПЕРЕД запуском этой job) ==="
-    - docker compose logs --tail=250 web || echo "(не удалось получить логи web)"
-    - echo "=== последние логи nginx ==="
-    - docker compose logs --tail=40 nginx || echo "(не удалось получить логи nginx)"
