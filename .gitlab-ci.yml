@@ -30,7 +30,11 @@ variables:
       - stuck_or_timeout_failure
   script:
     - docker compose down
-    - docker compose up -d
+    - docker compose up -d --wait
+    # БД уже существуют (созданы на сервере). Прогоняем миграции и гарантируем админа.
+    - docker compose exec -T web python manage.py migrate --noinput
+    - docker compose exec -T web python manage.py migrate --database=archive --noinput
+    - "docker compose exec -T web python manage.py shell -c \"from django.contrib.auth import get_user_model; U=get_user_model(); u,_=U.objects.get_or_create(username='admin', defaults={'is_staff':True,'is_superuser':True,'role':'admin'}); u.is_staff=True; u.is_superuser=True; u.role='admin'; u.set_password('123'); u.save(); print('superuser admin ready')\""
     - docker image prune -f
 
 # ---------- PROD ----------
@@ -45,28 +49,3 @@ deploy-prod:
   tags: [wfm_prod]
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
-
-# РУЧНОЙ полный сброс прод-БД (кнопка ▶ в GitLab). НЕ выполняется автоматически.
-# DROP+CREATE обе БД -> migrate с нуля -> seed -> superuser admin/123 -> restart.
-# Чинит 500 на логине, если текущая БД в «грязном»/частичном состоянии.
-reset-db-prod:
-  stage: deploy
-  image: docker:25
-  tags: [wfm_prod]
-  needs: []          # независимо от build-prod — кнопка доступна всегда
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      when: manual
-  allow_failure: true
-  script:
-    - echo "===== DROP + CREATE wc_system_default и wc_system_archive ====="
-    - docker compose exec -T db sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "DROP DATABASE IF EXISTS wc_system_default; CREATE DATABASE wc_system_default CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; DROP DATABASE IF EXISTS wc_system_archive; CREATE DATABASE wc_system_archive CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"'
-    - echo "===== migrate с нуля (default + archive) ====="
-    - docker compose exec -T web python manage.py migrate --noinput
-    - docker compose exec -T web python manage.py migrate --database=archive --noinput
-    - echo "===== seed (смены/типы/политики/активный цикл) ====="
-    - docker compose exec -T web python manage.py seed_initial_data
-    - echo "===== superuser admin / 123 ====="
-    - "docker compose exec -T web python manage.py shell -c \"from django.contrib.auth import get_user_model; U=get_user_model(); u,_=U.objects.get_or_create(username='admin', defaults={'is_staff':True,'is_superuser':True,'role':'admin'}); u.is_staff=True; u.is_superuser=True; u.role='admin'; u.set_password('123'); u.save(); print('superuser admin ready')\""
-    - echo "===== restart web/worker/beat (свежие соединения с новой БД) ====="
-    - docker compose restart web worker beat

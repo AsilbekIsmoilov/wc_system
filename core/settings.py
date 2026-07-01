@@ -9,9 +9,6 @@ SECRET_KEY = os.environ.get(
 
 DEBUG = os.environ.get("DEBUG", "1") == "1"
 
-# ВРЕМЕННО (диагностика 500): пробрасывать необработанные исключения наверх в
-# uvicorn — тогда в логах web будет "Exception in ASGI application" + traceback.
-DEBUG_PROPAGATE_EXCEPTIONS = DEBUG
 
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "*").split(",")
 
