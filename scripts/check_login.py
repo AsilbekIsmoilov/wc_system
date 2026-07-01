@@ -13,12 +13,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-CONNECT = "http://nginx"                      # куда реально коннектимся
-EXT = "http://10.145.20.9:4020"               # что видит Django (Host/Origin)
-LOGIN = CONNECT + "/api-auth/login/"
+# Коннектимся ПО СЕТИ на реальный внешний адрес (как браузер), чтобы пройти
+# через всё, что стоит перед контейнером (host-nginx/прокси), а не только
+# внутренний nginx.
+EXT = "http://10.145.20.9:4020"
+LOGIN = EXT + "/api-auth/login/"
 UA = "Mozilla/5.0"
 BROWSER_HEADERS = {
-    "Host": "10.145.20.9:4020",
     "Accept": "text/html",
     "User-Agent": UA,
 }

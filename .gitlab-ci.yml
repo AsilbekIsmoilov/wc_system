@@ -59,9 +59,11 @@ logs-prod:
       when: manual
   allow_failure: true
   script:
-    # Воспроизводим вход ровно как браузер (Host/Origin/Accept: text/html).
-    - echo "=== ВОСПРОИЗВЕДЕНИЕ входа как браузер (Host/Origin/Accept) ==="
-    - docker compose exec -T web python scripts/check_login.py || echo "(скрипт недоступен в образе — нужен свежий deploy-prod)"
+    # Копируем скрипт в живой контейнер (не нужен rebuild) и запускаем:
+    # он бьёт ПО СЕТИ на реальный http://10.145.20.9:4020 (через всё, что
+    # стоит перед контейнером), как браузер.
+    - echo "=== ВОСПРОИЗВЕДЕНИЕ входа как браузер (реальный внешний URL) ==="
+    - docker compose cp scripts/check_login.py web:/tmp/check_login.py && docker compose exec -T web python /tmp/check_login.py || echo "(не удалось запустить check_login.py)"
     - echo "=== logs/errors.log (полные traceback'и 5xx) ==="
     - docker compose exec -T web sh -c 'cat /app/logs/errors.log 2>/dev/null || echo "(файл /app/logs/errors.log пуст или отсутствует)"'
     - echo "=== консольные логи web (tail 250) ==="
