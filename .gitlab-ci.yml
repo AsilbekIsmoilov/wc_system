@@ -66,12 +66,12 @@ logs-prod:
   script:
     # Запускаем проверку в контейнере на СЕТИ ХОСТА (--network host):
     # сравниваем 127.0.0.1:4020 (nginx этого хоста) и 10.145.20.9:4020 (прод).
-    - echo "=== ПРОВЕРКА: тот ли это хост (127.0.0.1:4020 vs 10.145.20.9:4020) ==="
-    - docker rm -f diaghost >/dev/null 2>&1 || true
-    - docker run -d --name diaghost --network host wc_system-web sleep 120 >/dev/null 2>&1 || echo "(не удалось поднять diaghost)"
-    - docker cp scripts/check_login.py diaghost:/tmp/check_login.py || echo "(cp не сработал)"
-    - docker exec diaghost python /tmp/check_login.py || echo "(exec не сработал)"
-    - docker rm -f diaghost >/dev/null 2>&1 || true
+    - echo "=== PROVERKA hosta (127.0.0.1:4020 vs 10.145.20.9:4020) ==="
+    - docker rm -f diaghost || true
+    - docker run -d --name diaghost --network host wc_system-web sleep 120 || echo "diaghost up fail"
+    - docker cp scripts/check_login.py diaghost:/tmp/check_login.py || echo "cp fail"
+    - docker exec diaghost python /tmp/check_login.py || echo "exec fail"
+    - docker rm -f diaghost || true
     - echo "=== ВСЕ контейнеры на хосте (ищем, кто держит порт 4020) ==="
     - docker ps -a --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}" || echo "(docker ps не сработал)"
     - echo "=== все compose-проекты на хосте ==="
