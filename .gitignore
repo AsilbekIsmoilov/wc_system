@@ -10,3 +10,4 @@ staticfiles/
 creds.json
 celerybeat-schedule
 *.sqlite3
+.claude/

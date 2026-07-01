@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(git commit -q -m 'fix\\(ci\\): экранировать строку superuser \\(двоеточия в dict ломали YAML\\) *)",
-      "Bash(git commit -q -m 'ci: needs:[] для reset-db-prod \\(кнопка доступна даже при сбое build-prod\\) *)"
-    ]
-  }
-}
