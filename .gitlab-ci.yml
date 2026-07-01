@@ -68,7 +68,9 @@ diag-prod:
     - docker compose exec -T web python scripts/diag_conn.py
     - echo "=== ПОЛНЫЙ HTTP-путь через nginx (nginx -> web) ==="
     - docker compose exec -T web python scripts/diag_nginx.py
+    - echo "=== ВОСПРОИЗВЕДЕНИЕ браузерного входа /api-auth/login/ (форма + CSRF) ==="
+    - docker compose exec -T web python scripts/diag_login_form.py
+    - echo "=== логи web (тут будет traceback 500, если он есть) ==="
+    - docker compose logs --tail=120 web
     - echo "=== последние логи nginx ==="
     - docker compose logs --tail=40 nginx
-    - echo "=== последние логи web ==="
-    - docker compose logs --tail=40 web
