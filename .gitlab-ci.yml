@@ -64,6 +64,10 @@ logs-prod:
     # стоит перед контейнером), как браузер.
     - echo "=== ВОСПРОИЗВЕДЕНИЕ входа как браузер (реальный внешний URL) ==="
     - docker compose cp scripts/check_login.py web:/tmp/check_login.py && docker compose exec -T web python /tmp/check_login.py || echo "(не удалось запустить check_login.py)"
+    - echo "=== ВСЕ контейнеры на хосте (ищем, кто держит порт 4020) ==="
+    - docker ps -a --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}" || echo "(docker ps не сработал)"
+    - echo "=== все compose-проекты на хосте ==="
+    - docker compose ls -a || echo "(docker compose ls не сработал)"
     - echo "=== logs/errors.log (полные traceback'и 5xx) ==="
     - docker compose exec -T web sh -c 'cat /app/logs/errors.log 2>/dev/null || echo "(файл /app/logs/errors.log пуст или отсутствует)"'
     - echo "=== консольные логи web (tail 250) ==="
