@@ -62,15 +62,12 @@ diag-prod:
       when: manual
   allow_failure: true
   script:
-    - echo "=== базы, которые реально существуют на MySQL-сервере ==="
-    - docker compose exec -T db sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SHOW DATABASES;"'
-    - echo "=== к чему подключено приложение + тест логина ==="
-    - docker compose exec -T web python scripts/diag_conn.py
-    - echo "=== ПОЛНЫЙ HTTP-путь через nginx (nginx -> web) ==="
-    - docker compose exec -T web python scripts/diag_nginx.py
-    - echo "=== ВОСПРОИЗВЕДЕНИЕ браузерного входа /api-auth/login/ (форма + CSRF) ==="
-    - docker compose exec -T web python scripts/diag_login_form.py
-    - echo "=== логи web (тут будет traceback 500, если он есть) ==="
-    - docker compose logs --tail=120 web
+    # Действует даже на СТАРОМ контейнере (не зависит от новых скриптов в образе).
+    - echo "=== DEBUG и к чему подключено приложение ==="
+    - docker compose exec -T web python -c "from django.conf import settings as s; from django.db import connections as c; print('DEBUG =', s.DEBUG); print('DEFAULT =', c['default'].settings_dict['NAME'], '| ARCHIVE =', c['archive'].settings_dict['NAME'])"
+    - echo "=== попытка воспроизвести форму-логин (если скрипт есть в образе) ==="
+    - docker compose exec -T web python scripts/diag_login_form.py || echo "(скрипт недоступен в этом образе — полагаемся на воспроизведение 500 в браузере)"
+    - echo "=== ЛОГИ WEB (тут traceback 500; воспроизведите 500 в браузере ПЕРЕД запуском этой job) ==="
+    - docker compose logs --tail=250 web
     - echo "=== последние логи nginx ==="
     - docker compose logs --tail=40 nginx
