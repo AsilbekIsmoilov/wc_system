@@ -49,3 +49,20 @@ deploy-prod:
   tags: [wfm_prod]
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
+
+# Диагностика: к какой БД реально подключено приложение + тест логина на этой БД.
+# Запускается вручную (кнопка ▶) на pipeline ветки main.
+diag-prod:
+  stage: deploy
+  image: docker:25
+  tags: [wfm_prod]
+  needs: []
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: true
+  script:
+    - echo "=== базы, которые реально существуют на MySQL-сервере ==="
+    - docker compose exec -T db sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SHOW DATABASES;"'
+    - echo "=== к чему подключено приложение + тест логина ==="
+    - docker compose exec -T web python scripts/diag_conn.py
