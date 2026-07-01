@@ -59,8 +59,37 @@ logs-prod:
       when: manual
   allow_failure: true
   script:
+    # 1) Детерминированно воспроизводим ТОТ ЖЕ вход, что и браузер:
+    #    GET /api-auth/login/ (берём csrftoken) -> POST с логином/паролем/CSRF,
+    #    через nginx, изнутри контейнера. Так исключаем кэш/тайминг браузера.
+    - echo "=== СЕРВЕРНОЕ воспроизведение /api-auth/login/ (форма + CSRF, через nginx) ==="
+    - |
+      docker compose exec -T web python - <<'PY'
+      import http.cookiejar, re, urllib.parse, urllib.request, urllib.error
+      BASE = "http://nginx"; LOGIN = BASE + "/api-auth/login/"
+      jar = http.cookiejar.CookieJar()
+      op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+      html = op.open(urllib.request.Request(LOGIN), timeout=15).read().decode("utf-8", "replace")
+      m = re.search(r'name="csrfmiddlewaretoken"\s+value="([^"]+)"', html)
+      token = m.group(1) if m else ""
+      print("  csrfmiddlewaretoken:", "FOUND" if token else "MISSING")
+      data = urllib.parse.urlencode({"username": "admin", "password": "123",
+                                     "csrfmiddlewaretoken": token, "next": "/api/v1/"}).encode()
+      req = urllib.request.Request(LOGIN, data=data,
+                                   headers={"Content-Type": "application/x-www-form-urlencoded", "Referer": LOGIN},
+                                   method="POST")
+      try:
+          r = op.open(req, timeout=15)
+          print("  POST /api-auth/login/ ->", r.status, "(вход отработал, 500 НЕТ)")
+          print("  body:", r.read()[:200].decode("utf-8", "replace"))
+      except urllib.error.HTTPError as e:
+          print("  POST /api-auth/login/ -> HTTP", e.code, "(вот она, ошибка)")
+          print("  body:", e.read()[:400].decode("utf-8", "replace"))
+      except Exception as e:
+          print("  ОШИБКА:", repr(e))
+      PY
     - echo "=== logs/errors.log (полные traceback'и 5xx) ==="
-    - docker compose exec -T web sh -c 'cat logs/errors.log 2>/dev/null || echo "(файл logs/errors.log пуст или отсутствует)"'
+    - docker compose exec -T web sh -c 'cat /app/logs/errors.log 2>/dev/null || echo "(файл /app/logs/errors.log пуст или отсутствует)"'
     - echo "=== консольные логи web (tail 250) ==="
     - docker compose logs --tail=250 web || echo "(не удалось получить логи web)"
     - echo "=== логи nginx (tail 40) ==="
