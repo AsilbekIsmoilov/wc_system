@@ -63,11 +63,12 @@ diag-prod:
   allow_failure: true
   script:
     # Действует даже на СТАРОМ контейнере (не зависит от новых скриптов в образе).
+    # Каждый шаг с `|| echo`, чтобы логи гарантированно дошли до конца.
     - echo "=== DEBUG и к чему подключено приложение ==="
-    - docker compose exec -T web python -c "from django.conf import settings as s; from django.db import connections as c; print('DEBUG =', s.DEBUG); print('DEFAULT =', c['default'].settings_dict['NAME'], '| ARCHIVE =', c['archive'].settings_dict['NAME'])"
+    - docker compose exec -T web python manage.py shell -c "from django.conf import settings as s; from django.db import connections as c; print('DEBUG =', s.DEBUG); print('DEFAULT =', c['default'].settings_dict['NAME'], '| ARCHIVE =', c['archive'].settings_dict['NAME'])" || echo "(не удалось получить DEBUG)"
     - echo "=== попытка воспроизвести форму-логин (если скрипт есть в образе) ==="
     - docker compose exec -T web python scripts/diag_login_form.py || echo "(скрипт недоступен в этом образе — полагаемся на воспроизведение 500 в браузере)"
     - echo "=== ЛОГИ WEB (тут traceback 500; воспроизведите 500 в браузере ПЕРЕД запуском этой job) ==="
-    - docker compose logs --tail=250 web
+    - docker compose logs --tail=250 web || echo "(не удалось получить логи web)"
     - echo "=== последние логи nginx ==="
-    - docker compose logs --tail=40 nginx
+    - docker compose logs --tail=40 nginx || echo "(не удалось получить логи nginx)"
