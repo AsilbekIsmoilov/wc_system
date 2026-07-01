@@ -54,6 +54,11 @@ logs-prod:
   image: docker:25
   tags: [wfm_prod]
   needs: []
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
       when: manual
